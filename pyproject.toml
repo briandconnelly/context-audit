@@ -1,0 +1,25 @@
+[project]
+name = "context-audit"
+version = "0.0.0"
+description = "Audit third-party context that reaches a coding agent for unexpected directives."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.13"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.9", "ty"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["docs", "runs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.ty.src]
+exclude = ["runs", "docs"]

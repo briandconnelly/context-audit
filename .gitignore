@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+runs/
+.superpowers/
+.pytest_cache/
+.ruff_cache/
