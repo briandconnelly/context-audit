@@ -40,11 +40,11 @@ def _run(scenario: Scenario, out: Path) -> Result:
 def _save_receipts(home: Path, results: list[Result]) -> Path:
     """Merge this run's receipts into home/receipts.json, replacing older ones it re-probed."""
     new = to_receipts(results, claude_version=claude_version(), plugin_version=PLUGIN_VERSION)
-    redone = {(r.behaviour, r.claude_version, r.plugin_version) for r in new}
+    redone = {(r.behaviour, r.claude_version, r.plugin_version, r.build) for r in new}
     kept = [
         r
         for r in read_receipts(home)
-        if (r.behaviour, r.claude_version, r.plugin_version) not in redone
+        if (r.behaviour, r.claude_version, r.plugin_version, r.build) not in redone
     ]
     home.mkdir(mode=0o700, parents=True, exist_ok=True)
     write_receipts(home, [*kept, *new])

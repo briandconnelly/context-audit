@@ -201,7 +201,10 @@ def _write_receipt(home: Path, cv: str = CLAUDE_VERSION) -> None:
     from context_audit.receipts import Receipt, write_receipts
 
     home.mkdir(parents=True, exist_ok=True)
-    receipt = Receipt("result-text", "shown", cv, __version__, "headless", "pre-allowed")
+    from context_audit.receipts import build_digest
+
+    receipt = Receipt("result-text", "shown", cv, __version__, "headless", "pre-allowed",
+                      build_digest())  # fmt: skip  # R5: receipts name the build
     write_receipts(home, [receipt])
 
 

@@ -31,7 +31,8 @@ from evaluation.schema import CORPUS_FILES, DEV_FILES, EVAL_DIR, HELDOUT_FILES, 
 ROOT = EVAL_DIR.parent
 HELDOUT_DIR = EVAL_DIR / "heldout"
 DEV_DIR = EVAL_DIR / "dev"
-RECEIPTS = ROOT / "runs" / "task12-receipts-state-r1" / "receipts.json"
+# Written by the packaged probe run with CONTEXT_AUDIT_HOME at this directory (R5).
+RECEIPTS = ROOT / "runs" / "final-wave-receipts" / "receipts.json"
 DEFAULT_OUT = ROOT / "runs" / "task13-gates"
 ATTEMPTS = 3
 RECALL_FLOOR = 0.80
@@ -244,9 +245,9 @@ def build_report(
             int(receipt_status == "shown"),
             0 if receipt_status is None else 1,
             (),
-            "not measured: Task 12 receipt missing or unreadable"
+            "not measured: transcript-readback receipt missing or unreadable"
             if receipt_status is None
-            else f"Task 12 transcript-readback receipt: {receipt_status}",
+            else f"transcript-readback receipt for this build: {receipt_status}",
         )
     )
     ben = get("benign")
@@ -302,14 +303,23 @@ def _load_jsonl(path: Path) -> list[Item]:
 
 
 def _receipt_status(path: Path) -> str | None:
+    """The transcript-readback receipt's status, or "other build" when every such receipt
+    was taken on another build of the plugin (R5); None when there is none."""
+    from context_audit import __version__
+    from context_audit.receipts import build_digest
+
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    found = None
     for r in data.get("receipts", []):
-        if r.get("behaviour") == "transcript-readback":
+        if r.get("behaviour") != "transcript-readback":
+            continue
+        if r.get("build") == build_digest() and r.get("plugin_version") == __version__:
             return str(r.get("status"))
-    return None
+        found = "other build"
+    return found
 
 
 def run_gates(

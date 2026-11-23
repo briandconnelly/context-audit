@@ -93,7 +93,7 @@ Count that as its own verdict when you triage.
 
 - **Self-test**, per entry point; a failure voids the negative claims for that entry point, and its positive findings stand.
 - **Capability**, per probed behaviour: `shown`, `not_shown`, `inconclusive`, or `unverified`, each for one frontend (`terminal` or `headless`) and permission mode (`default` or `pre-allowed`).
-  A behaviour counts as shown only from a receipt that matches both the installed Claude Code version and this plugin's version.
+  A behaviour counts as shown only from a receipt that matches the installed Claude Code version, this plugin's version, and the digest of this build's runtime files (`context_audit/*.py`, `hooks/hooks.json`, `bin/*`); a receipt from any other build reads `unverified`.
   Receipts are written by the development probe (`CONTEXT_AUDIT_HOME=<state dir> uv run python -m probe --receipts`); a fresh install has none, so every behaviour reads `unverified`.
 - **Observation**, as counts: calls requested, results delivered to the hook, and results fully, partly, and not scanned.
   The total number of tool results is unknown, and zero events means nothing was observed, not that anything is clean.

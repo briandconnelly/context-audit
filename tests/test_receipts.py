@@ -14,8 +14,10 @@ def receipt(
     pv="0.0.0",
     frontend="headless",
     mode="pre-allowed",
+    build=None,
 ) -> Receipt:
-    return Receipt(behaviour, status, cv, pv, frontend, mode)
+    # R5 (final fix wave): a receipt names the digest of the runtime files it was taken on.
+    return Receipt(behaviour, status, cv, pv, frontend, mode, build or receipts.build_digest())
 
 
 def by_name(caps):
@@ -111,11 +113,42 @@ def test_disagreeing_duplicates_never_report_shown(tmp_path, other):
     assert by_name(capability(tmp_path, "2.1.330", "0.0.0"))["result-text"]["status"] == other
 
 
-def test_stale_temporary_file_is_replaced(tmp_path):
-    (tmp_path / "receipts.json.tmp").write_text("stale")
+def test_stale_temporary_file_is_left_alone(tmp_path):
+    # R5 (final fix wave): writes use an exclusively created, uniquely named temp file, so a
+    # file at the old fixed temp name is neither reused nor followed.
+    victim = tmp_path / "victim"
+    victim.write_text("keep")
+    (tmp_path / "receipts.json.tmp").symlink_to(victim)
     write_receipts(tmp_path, [receipt()])
     assert read_receipts(tmp_path) == [receipt()]
-    assert not (tmp_path / "receipts.json.tmp").exists()
+    assert victim.read_text() == "keep"
+    assert not [p for p in tmp_path.iterdir() if p.name.endswith(".tmp") and not p.is_symlink()]
+
+
+def test_a_receipt_from_another_build_is_unverified(tmp_path):
+    write_receipts(tmp_path, [receipt(build="0" * 16)])
+    assert _all_unverified(tmp_path)
+    write_receipts(tmp_path, [receipt()])
+    assert not _all_unverified(tmp_path)
+
+
+def test_build_digest_covers_the_runtime_files(tmp_path):
+    import shutil
+    from pathlib import Path
+
+    repo = Path(receipts.__file__).resolve().parent.parent
+    copy = tmp_path / "plugin"
+    shutil.copytree(repo / "context_audit", copy / "context_audit",
+                    ignore=shutil.ignore_patterns("__pycache__"))  # fmt: skip
+    shutil.copytree(repo / "hooks", copy / "hooks")
+    shutil.copytree(repo / "bin", copy / "bin")
+    assert receipts.build_digest(copy) == receipts.build_digest()
+    for rel in ("context_audit/scan.py", "hooks/hooks.json", "bin/context-audit-hook"):
+        path = copy / rel
+        original = path.read_bytes()
+        path.write_bytes(original + b"\n")
+        assert receipts.build_digest(copy) != receipts.build_digest(), rel
+        path.write_bytes(original)
 
 
 def _all_unverified(tmp_path):

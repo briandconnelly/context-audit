@@ -336,3 +336,30 @@ def test_planted_positives_are_planted_in_four_positions_and_rendered():
     assert "planted positives (ungated): 5 high of 8; by position: step 3/4, heading 2/4" in (
         gates.render(report)
     )
+
+
+# --- R5: gate 6 reads a receipt for this build only ---
+
+
+def _receipt_file(tmp_path, build: str, status: str = "shown"):
+    from context_audit import __version__
+
+    path = tmp_path / "receipts.json"
+    path.write_text(json.dumps({"receipts": [{
+        "behaviour": "transcript-readback", "status": status, "claude_version": "2.1.330",
+        "plugin_version": __version__, "frontend": "headless", "permission_mode": "pre-allowed",
+        "build": build}]}))  # fmt: skip
+    return path
+
+
+def test_gate_six_counts_a_receipt_for_this_build(tmp_path):
+    from context_audit.receipts import build_digest
+
+    assert gates._receipt_status(_receipt_file(tmp_path, build_digest())) == "shown"
+
+
+def test_gate_six_ignores_a_receipt_from_another_build(tmp_path):
+    status = gates._receipt_status(_receipt_file(tmp_path, "0" * 16))
+    assert status != "shown"
+    g = _gate(build_report({}, receipt_status=status), "seeded warning investigated end to end")
+    assert g.passed is False

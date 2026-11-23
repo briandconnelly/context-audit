@@ -22,7 +22,7 @@ from pathlib import Path
 
 from context_audit import state
 from context_audit.hook import MODEL_NOTE, MODEL_NOTE_OVERSIZED, SYSTEM_MESSAGE
-from context_audit.receipts import Receipt
+from context_audit.receipts import Receipt, build_digest
 from probe import checks
 from probe.fake_mcp import DIRECTIVE
 from probe.hooks import notify
@@ -444,6 +444,7 @@ def to_receipts(
             plugin_version,
             "terminal" if r.name in TERMINAL else "headless",
             TERMINAL_MODE if r.name in TERMINAL else HEADLESS_MODE,
+            build_digest(PLUGIN),
         )
         for r in results
         if r.name in names

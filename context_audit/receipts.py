@@ -1,17 +1,20 @@
 """Coverage receipts: what the probe showed the packaged hooks doing on one harness build.
 
 The probe writes ``receipts.json`` into the state directory; `status` and `scan` read it.
-A receipt counts only when it matches both the installed Claude Code version and this
-plugin's version, and only for the frontend and permission mode it was taken in; every
-other behaviour is reported ``unverified``.
+A receipt counts only when it matches the installed Claude Code version, this plugin's
+version, and the digest of this build's runtime files (`build_digest`), and only for the
+frontend and permission mode it was taken in; every other behaviour, including one whose
+receipt came from another build, is reported ``unverified``.
 """
 
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import re
+import secrets
 import select
 import signal
 import stat
@@ -28,7 +31,9 @@ from context_audit.report import (
     unverified_entry,
 )
 
-__all__ = ["VERSION_UNKNOWN", "Receipt", "capability", "read_receipts", "write_receipts"]
+__all__ = [
+    "VERSION_UNKNOWN", "Receipt", "build_digest", "capability", "read_receipts", "write_receipts",
+]  # fmt: skip
 
 RECEIPT_STATUSES = ("shown", "not_shown", "inconclusive")
 # When receipts for one behaviour, frontend and mode disagree, the least favourable wins.
@@ -47,6 +52,38 @@ class Receipt:
     plugin_version: str
     frontend: str  # one of FRONTENDS
     permission_mode: str  # one of PERMISSION_MODES
+    build: str  # build_digest() of the plugin the receipt was taken on
+
+
+# The plugin's runtime files, which a receipt's build digest covers. In a repository or
+# plugin directory they sit beside the package; a wheel carries hooks/ and bin/ inside the
+# package under _runtime/ (see pyproject.toml).
+_PACKAGE = Path(__file__).resolve().parent
+
+
+def _runtime_files(top: Path) -> list[tuple[str, Path]]:
+    package = top / "context_audit"
+    extra = top if (top / "hooks" / "hooks.json").is_file() else package / "_runtime"
+    files = [(f"context_audit/{p.name}", p) for p in package.glob("*.py")]
+    files.append(("hooks/hooks.json", extra / "hooks" / "hooks.json"))
+    bin_dir = extra / "bin"
+    if bin_dir.is_dir():
+        files += [(f"bin/{p.name}", p) for p in bin_dir.iterdir() if p.is_file()]
+    return sorted(files)
+
+
+def build_digest(top: Path | None = None) -> str:
+    """SHA-256 (first 16 hex characters) over the runtime files' names and contents:
+    context_audit/*.py, hooks/hooks.json, and bin/*. A missing file is hashed as missing."""
+    h = hashlib.sha256()
+    for name, path in _runtime_files(top or _PACKAGE.parent):
+        try:
+            data = path.read_bytes()
+        except OSError:
+            data = None
+        h.update(name.encode() + b"\0")
+        h.update(b"-\0" if data is None else str(len(data)).encode() + b"\0" + data)
+    return h.hexdigest()[:16]
 
 
 _KEYS = tuple(f.name for f in fields(Receipt))
@@ -68,12 +105,14 @@ def write_receipts(root: Path, receipts: list[Receipt]) -> None:
     if bad:
         raise ValueError(f"invalid receipt(s): {bad}")
     path = root / "receipts.json"
-    tmp = root / "receipts.json.tmp"
-    tmp.unlink(missing_ok=True)
+    tmp = root / f"receipts.json.{secrets.token_hex(8)}.tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump({"receipts": [asdict(r) for r in receipts]}, f, indent=1)
-    os.replace(tmp, path)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"receipts": [asdict(r) for r in receipts]}, f, indent=1)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _read_bytes(path: Path) -> bytes | None:
@@ -109,13 +148,19 @@ def read_receipts(root: Path) -> list[Receipt]:
         return []
 
 
-def capability(root: Path, claude_version: str | None, plugin_version: str) -> list[dict]:
+def capability(
+    root: Path, claude_version: str | None, plugin_version: str, build: str | None = None
+) -> list[dict]:
     """One entry per behaviour and (frontend, permission mode) with a matching receipt,
-    and an unverified entry for each behaviour with none."""
+    and an unverified entry for each behaviour with none. `build` defaults to this build's
+    digest."""
+    build = build_digest() if build is None else build
     found: dict[tuple[str, str, str], str] = {}
     if claude_version is not None:
         for r in read_receipts(root):
             if r.claude_version != claude_version or r.plugin_version != plugin_version:
+                continue
+            if r.build != build:
                 continue
             key = (r.behaviour, r.frontend, r.permission_mode)
             found[key] = min(found.get(key, "shown"), r.status, key=_WORST_FIRST.index)
