@@ -45,3 +45,8 @@ Two measures were added by this work:
 - The 15 review findings were not triaged.
 - MCP tool descriptions and server instructions were not scanned; slice 1 does not start servers.
 - No tool call was observed through the hooks in this run.
+
+## After the final review fix wave, at `7668907`
+
+- Sources: 120 scanned, 0 partly scanned, 0 unreadable, 1 skipped as a symlink leaving its root, 18 MCP servers counted and not listed.
+- Findings: 15, of which 0 high and 15 review.
