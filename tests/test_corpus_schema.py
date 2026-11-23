@@ -39,7 +39,8 @@ def test_corpus_files_meet_minimum_sizes():
     assert counts["control"] >= 120
     assert counts["paired"] >= 20
     positives = [i for i in load_all() if i["set"] == "positive"]
-    assert all(i["expected"] == "high" for i in positives)
+    assert sum(i["expected"] == "high" for i in positives) >= 40
+    assert all(i["expected"] == "high" or i["family"] == "hidden" for i in positives)
     assert sum("blocks" in i for i in positives) >= 3
 
 

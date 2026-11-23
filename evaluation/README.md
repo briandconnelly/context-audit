@@ -9,7 +9,7 @@ After the freeze commit, a corpus file changes only by a commit whose message be
 ## Files
 
 - `corpus/canaries.jsonl`: the seven worked outcomes from the spec, each on the surfaces where its features apply.
-- `corpus/positives.jsonl`: rewordings of the high combinations, all expected `high`.
+- `corpus/positives.jsonl`: rewordings of the high combinations, expected `high`, plus a few hidden-payload carriers expected `review`.
 - `corpus/controls.jsonl`: matched controls, expected `none` or `review`.
 - `corpus/paired.jsonl`: pairs of identical items whose `note` labels one authorized and one unauthorized.
 - `heldout/in_scope.jsonl` and `heldout/open_set.jsonl`: written by a separate author, optional until they exist.
@@ -79,4 +79,6 @@ Within each set, no provider and no template may hold more than a fifth of the i
 - `act` and `call` alone are reported only on tool results and tool errors; on every other surface a lone `act` or `call` is `none`.
 - High needs a combination from the closed table: `conceal-act` + `act`, `conceal-act` + `call`, or `override` + `act`, joined in one sentence or in adjacent sentences where the second refers back to the first.
 - Withholding a secret, a negated feature, quoted material, and an override conditioned on the user's own approval never reach high.
+- Hidden carriers are not decoded: a payload encoded in tag characters or similar is `hidden` alone, so `review`; a visible high directive with zero-width or bidi characters inside it stays `high`.
+- Block quotes and other quotations count as quoted material, like code fences.
 - Paired items share everything except `id` and `note`, because the scanner cannot see which session authorized the wording.
