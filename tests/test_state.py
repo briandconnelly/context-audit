@@ -140,3 +140,22 @@ def test_version_constants():
 
     assert isinstance(context_audit.__version__, str)
     assert context_audit.RULE_VERSION == 1
+
+
+def test_key_is_never_visible_half_written(tmp_path, monkeypatch):
+    """A concurrent reader outside the lock must see no key or a whole key, never an
+    empty one: the key appears under its name only after all 32 bytes are written."""
+    from context_audit import state
+
+    seen = []
+    real = state.secrets.token_bytes
+
+    def probe(n):
+        seen.append((tmp_path / "key").exists())
+        return real(n)
+
+    monkeypatch.setattr(state.secrets, "token_bytes", probe)
+    state.span_digest(tmp_path, "x")
+    assert seen == [False]
+    assert len((tmp_path / "key").read_bytes()) == 32
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith("key")] == ["key"]

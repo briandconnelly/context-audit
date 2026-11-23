@@ -71,9 +71,16 @@ def _key(root: Path) -> bytes:
     except FileNotFoundError:
         with _locked(root):
             if not path.exists():
-                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                with os.fdopen(fd, "wb") as f:
-                    f.write(secrets.token_bytes(32))
+                # Write the key under a temporary name and link it into place, so a
+                # reader outside the lock never sees an empty or partial key.
+                tmp = root / f"key.{os.getpid()}.tmp"
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                try:
+                    with os.fdopen(fd, "wb") as f:
+                        f.write(secrets.token_bytes(32))
+                    os.link(tmp, path)
+                finally:
+                    tmp.unlink(missing_ok=True)
             key = path.read_bytes()
     except OSError as e:
         raise StateError(f"cannot read key in {root}: {e.strerror}") from e
