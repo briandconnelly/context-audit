@@ -27,7 +27,7 @@ TOOL_RESULT_KIND = "tool_result"
 TOOL_SURFACES = {"PostToolUse": "tool_result", "PostToolUseFailure": "tool_error"}
 READ_KINDS = frozenset({"skill", "command", "agent", "hook_prompt"})
 
-# Until receipts exist (Task 12), every probed behaviour is reported as unverified.
+# Probed behaviours; `context_audit.receipts` gives each a status from the probe's receipts.
 CAPABILITY_BEHAVIOURS = (
     "result-text",
     "result-structured",
@@ -83,7 +83,7 @@ def escape(text: str) -> str:
     return "".join(out)
 
 
-def capability() -> list[dict]:
+def unverified_capability() -> list[dict]:
     return [{"behaviour": b, "status": "unverified"} for b in CAPABILITY_BEHAVIOURS]
 
 
@@ -135,6 +135,7 @@ def model_report(
     findings: list[tuple[Finding, Source]],
     log_records: list[dict],
     trimmed: bool,
+    capability: list[dict] | None = None,
 ) -> dict:
     voided = [t.entry for t in selftest if not t.passed]
     items: list[dict] = []
@@ -183,7 +184,7 @@ def model_report(
             }
             for t in selftest
         ],  # fmt: skip
-        "capability": capability(),
+        "capability": capability if capability is not None else unverified_capability(),
         "observation": obs,
         "sources": counts,
         "findings": items,

@@ -18,7 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from probe.runner import collect, fresh_dir, isolated_workdir, judge, prepare
+from probe.runner import collect, fresh_dir, gather, isolated_workdir, judge, prepare
 from probe.sandbox import SYNTHETIC_KEY, Completed, Sandbox
 from probe.scenario import Result, Scenario
 from probe.stub import Stub
@@ -69,11 +69,13 @@ def drive(
     until: str | Callable[[str], bool] | None = None,
     timeout: float = 180,
     settle: float = 1.0,
+    raw_path: Path | None = None,
 ) -> tuple[str, str | None, int | None, list[bool]]:
     """Run ``argv`` on a pty.
 
     Returns the screen text, the awaited text that never came (or None), the exit code, and
     whether each step's text was seen. Each wait looks only at output since the last send.
+    With ``raw_path``, the unfiltered bytes the program wrote are saved there.
     """
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 200, 0, 0))
@@ -156,6 +158,8 @@ def drive(
         exit_code = _finish(proc)
         pump(0.3)
         os.close(master)
+        if raw_path is not None:
+            raw_path.write_bytes(bytes(raw))
     return screen(), missing, exit_code, seen
 
 
@@ -210,14 +214,20 @@ def run_interactive(
             ),
             timeout=timeout,
             settle=1.5,
+            raw_path=run_dir / "raw.bin",
         )
         completed = Completed(exit_code, "", "", False)
-        ev = replace(collect(run_dir, prepared, completed, stub, screen), steps_seen=tuple(seen))
+        ev = replace(
+            collect(run_dir, prepared, completed, stub, screen),
+            steps_seen=tuple(seen),
+            raw=(run_dir / "raw.bin").read_bytes(),
+        )
     (run_dir / "screen.txt").write_text(screen, encoding="utf-8")
     if missing is not None:
         tail = screen[-400:]
         return Result(
             s.name, s.claim, "inconclusive", f"never saw {missing!r}; screen tail: {tail}", run_dir
         )
+    gather(s, ev)
     outcome, reason = judge(s, ev)
     return Result(s.name, s.claim, outcome, reason, run_dir)

@@ -18,7 +18,7 @@ import json  # noqa: E402
 import os  # noqa: E402
 import stat  # noqa: E402
 
-from context_audit import state  # noqa: E402
+from context_audit import __version__, state  # noqa: E402
 from context_audit.ingest import from_hook_event, source_id_for  # noqa: E402
 from context_audit.inventory import (  # noqa: E402
     Roots,
@@ -27,6 +27,7 @@ from context_audit.inventory import (  # noqa: E402
     enumerate_sources,
     read_fields,
 )
+from context_audit.receipts import capability, installed_claude_version  # noqa: E402
 from context_audit.report import (  # noqa: E402
     FINDING_ID,
     READ_KINDS,
@@ -68,6 +69,11 @@ def _open_state() -> Path:
     return root
 
 
+def _capability(root: Path) -> list[dict]:
+    """Receipts in the state directory that match the installed Claude Code and this plugin."""
+    return capability(root, installed_claude_version(), __version__)
+
+
 def _scan_source(source: Source, root: Path) -> tuple[list[Field], list[Finding]]:
     fields = read_fields(source)
     return fields, list(scan_fields(fields, state_root=root).findings)
@@ -82,8 +88,13 @@ def _print_selftest(results: list[SelfTest]) -> None:
 
 def _print_coverage(rep: dict) -> None:
     print("Capability (per behaviour):")
+    reasons = []
     for c in rep["capability"]:
         print(f"  {c['behaviour']}: {c['status']}")
+        if c.get("reason") and c["reason"] not in reasons:
+            reasons.append(c["reason"])
+    for r in reasons:
+        print(f"  {r}")
     print("Observation (counts, not a verdict):")
     for k, v in rep["observation"].items():
         print(f"  {k}: {v}")
@@ -125,6 +136,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         findings=found,
         log_records=log,
         trimmed=(root / "trimmed").exists(),
+        capability=_capability(root),
     )
     if args.json:
         print(json.dumps(rep, ensure_ascii=True, indent=2))
@@ -197,6 +209,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         findings=[],
         log_records=[],
         trimmed=trimmed.exists(),
+        capability=_capability(root),
     )
     print(f"State directory: {escape(str(root))}")
     _print_selftest(results)

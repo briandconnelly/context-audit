@@ -55,7 +55,8 @@ def prepare(
             "PROBE_HOOK_LABEL": spec.label,
         }
         assigns = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
-        command = f"{assigns} {shlex.quote(sys.executable)} -I {shlex.quote(str(HOOK))}"
+        script = spec.script or HOOK
+        command = f"{assigns} {shlex.quote(sys.executable)} -I {shlex.quote(str(script))}"
         group: dict[str, Any] = {"hooks": [{"type": "command", "command": command}]}
         if spec.matcher is not None:
             group["matcher"] = spec.matcher
@@ -115,6 +116,16 @@ def judge(s: Scenario, ev: Evidence) -> tuple[Outcome, str]:
         return s.check(ev)
     except Exception as exc:  # noqa: BLE001 - a broken check must not look like a finding
         return "inconclusive", f"check failed: {type(exc).__name__}: {exc}"
+
+
+def gather(s: Scenario, ev: Evidence) -> None:
+    """Run the scenario's after-step; a failure there is left for the check to find."""
+    if s.after is None:
+        return
+    try:
+        s.after(ev)
+    except Exception as exc:  # noqa: BLE001 - the check reports the missing evidence
+        (ev.run_dir / "after-error.txt").write_text(f"{type(exc).__name__}: {exc}\n")
 
 
 def fresh_dir(run_dir: Path) -> None:
@@ -178,5 +189,6 @@ def run_scenario(s: Scenario, run_dir: Path, *, timeout: float = 120) -> Result:
             ev = collect(run_dir, again, completed, stub)
     (run_dir / "stdout.txt").write_text(ev.completed.stdout, encoding="utf-8")
     (run_dir / "stderr.txt").write_text(ev.completed.stderr, encoding="utf-8")
+    gather(s, ev)
     outcome, reason = judge(s, ev)
     return Result(s.name, s.claim, outcome, reason, run_dir)
