@@ -142,7 +142,7 @@ def test_counter_records_each_call(server, counter):
     assert lines == [{"tool": "follow_on"}, {"tool": "echo_text"}]
 
 
-SHAPES = ("text", "structured", "split", "big")
+SHAPES = ("text", "structured", "split", "big", "over-budget")
 
 
 def test_directive_tools_are_listed(server):
@@ -161,6 +161,9 @@ def test_echo_directive_carries_the_canary_in_each_shape(server, shape):
         assert len(result["content"]) == 2
         assert DIRECTIVE in result["content"][1]["text"]
         assert DIRECTIVE not in result["content"][0]["text"]
+    elif shape == "over-budget":
+        text = text_of({"result": result})
+        assert len(text) == 200_000 and DIRECTIVE in text[:1000]
     elif shape == "big":
         text = text_of({"result": result})
         assert len(text) == 140_000 and text.endswith(DIRECTIVE)

@@ -88,7 +88,12 @@ def test_model_report_keys_are_closed(tmp_path):
         assert set(e) == {"entry", "passed", "missed", "flagged"}
         assert isinstance(e["missed"], int) and isinstance(e["flagged"], int)
     assert [c["behaviour"] for c in rep["capability"]] == list(CAPABILITY_BEHAVIOURS)
+    assert len(CAPABILITY_BEHAVIOURS) == 9
     assert {c["status"] for c in rep["capability"]} == {"unverified"}
+    assert all(set(c) == {"behaviour", "status", "frontend", "permission_mode"}
+               for c in rep["capability"])  # fmt: skip
+    assert {(c["frontend"], c["permission_mode"]) for c in rep["capability"]} == {("none", "none")}
+    assert report.CAPABILITY_SCOPE in rep["messages"]
     assert set(rep["observation"]) == {
         "calls_requested", "results_delivered", "fully_scanned", "partly_scanned",
         "not_scanned", "unmatched_requests", "total_results",

@@ -199,7 +199,7 @@ def _write_receipt(home: Path, cv: str = CLAUDE_VERSION) -> None:
     from context_audit.receipts import Receipt, write_receipts
 
     home.mkdir(parents=True, exist_ok=True)
-    receipt = Receipt("result-text", "shown", cv, __version__, "headless", "default")
+    receipt = Receipt("result-text", "shown", cv, __version__, "headless", "pre-allowed")
     write_receipts(home, [receipt])
 
 
@@ -207,10 +207,17 @@ def test_status_and_scan_read_receipts_for_the_installed_versions(env, capsys):
     _write_receipt(env["home"])
     assert run(env, "status") == 0
     out = capsys.readouterr().out
-    assert "result-text: shown" in out and "result-big: unverified" in out
+    assert "result-text: shown (headless, pre-allowed)" in out
+    assert "result-over-budget: unverified" in out
+    assert report.CAPABILITY_SCOPE in out
     run(env, "scan", "--json")
     caps = {c["behaviour"]: c for c in json.loads(capsys.readouterr().out)["capability"]}
-    assert caps["result-text"] == {"behaviour": "result-text", "status": "shown"}
+    assert caps["result-text"] == {
+        "behaviour": "result-text",
+        "status": "shown",
+        "frontend": "headless",
+        "permission_mode": "pre-allowed",
+    }
     assert caps["error"]["status"] == "unverified"
 
 
@@ -231,4 +238,5 @@ def test_unknown_claude_version_says_so(env, capsys, monkeypatch):
     assert "result-text: unverified" in out and VERSION_UNKNOWN in out
     run(env, "scan", "--json")
     rep = json.loads(capsys.readouterr().out)
-    assert {c["reason"] for c in rep["capability"]} == {VERSION_UNKNOWN}
+    assert {c["status"] for c in rep["capability"]} == {"unverified"}
+    assert VERSION_UNKNOWN in rep["messages"]

@@ -32,13 +32,22 @@ CAPABILITY_BEHAVIOURS = (
     "result-text",
     "result-structured",
     "result-split",
-    "result-big",
+    "result-large-in-budget",
+    "result-over-budget",
     "error",
     "direct-message",
     "transcript-readback",
     "notification",
 )
 CAPABILITY_STATUSES = ("shown", "not_shown", "inconclusive", "unverified")
+FRONTENDS = ("terminal", "headless")  # "none" in an entry means unverified
+PERMISSION_MODES = ("default", "pre-allowed")
+
+CAPABILITY_SCOPE = (
+    "A capability is shown only for the frontend and permission mode listed with it; "
+    "it is unverified for every other way of running Claude Code."
+)
+VERSION_UNKNOWN = "The installed Claude Code version is unknown, so no receipt can match."
 
 VOIDED_MESSAGE = (
     "The self-test failed for the entry points listed in 'voided': a missing finding "
@@ -63,7 +72,7 @@ INVESTIGATE = (
 )
 FIXED_MESSAGES = frozenset(
     {VOIDED_MESSAGE, TOTAL_UNKNOWN, NOTHING_OBSERVED, MCP_NOT_LISTED, LOG_TRIMMED, NAMES_NOTE,
-     INVESTIGATE}
+     INVESTIGATE, CAPABILITY_SCOPE, VERSION_UNKNOWN}
 )  # fmt: skip
 
 
@@ -83,8 +92,13 @@ def escape(text: str) -> str:
     return "".join(out)
 
 
+def unverified_entry(behaviour: str) -> dict:
+    return {"behaviour": behaviour, "status": "unverified", "frontend": "none",
+            "permission_mode": "none"}  # fmt: skip
+
+
 def unverified_capability() -> list[dict]:
-    return [{"behaviour": b, "status": "unverified"} for b in CAPABILITY_BEHAVIOURS]
+    return [unverified_entry(b) for b in CAPABILITY_BEHAVIOURS]
 
 
 def observation(counters: Mapping[str, int]) -> dict:
@@ -136,6 +150,7 @@ def model_report(
     log_records: list[dict],
     trimmed: bool,
     capability: list[dict] | None = None,
+    claude_version_known: bool = True,
 ) -> dict:
     voided = [t.entry for t in selftest if not t.passed]
     items: list[dict] = []
@@ -166,6 +181,9 @@ def model_report(
     if voided:
         messages.append(VOIDED_MESSAGE)
     messages.append(TOTAL_UNKNOWN)
+    messages.append(CAPABILITY_SCOPE)
+    if not claude_version_known:
+        messages.append(VERSION_UNKNOWN)
     if obs["calls_requested"] == 0 and obs["results_delivered"] == 0:
         messages.append(NOTHING_OBSERVED)
     if counts["mcp_servers_not_listed"]:

@@ -19,7 +19,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from context_audit import state
-from context_audit.hook import MODEL_NOTE, SYSTEM_MESSAGE
+from context_audit.hook import MODEL_NOTE, MODEL_NOTE_OVERSIZED, SYSTEM_MESSAGE
 from context_audit.receipts import Receipt
 from probe import checks
 from probe.fake_mcp import DIRECTIVE
@@ -32,7 +32,11 @@ PLUGIN = Path(__file__).resolve().parent.parent.parent
 NOTIFY_HOOK = Path(notify.__file__).resolve()
 CALL_ID = "toolu_probe01"
 FINISHED = "probe-finished"
-PERMISSION_MODE = "default"  # headless runs pre-allow the tools; terminal runs pass the flag
+# Terminal runs pass --permission-mode default; headless runs pre-allow the tools instead.
+TERMINAL_MODE, HEADLESS_MODE = "default", "pre-allowed"
+MIN_SPAN = 20
+BUDGET_REASONS = ("byte-budget", "time-budget", "field-budget")
+OVERSIZED_EXTRA = MODEL_NOTE_OVERSIZED.removeprefix(MODEL_NOTE)
 MESSAGE_PREFIX = SYSTEM_MESSAGE.split("{", 1)[0]
 NOTE_PREFIX = MODEL_NOTE[:60]
 NOTIFY_TEXT = notify.NOTIFY_TEXT
@@ -41,6 +45,10 @@ NOTIFY_START = b"\x1b]9;context-audit"
 SPAN = re.compile(r">>>(.+?)<<<")
 
 RESULT_CLAIM = "The packaged hook fully scans each result shape and logs a high finding"
+OVER_BUDGET_CLAIM = (
+    "Over the scanner's budget, the packaged hook records a partial scan and still warns on "
+    "a directive in the scanned part"
+)
 ERROR_CLAIM = "The packaged hook scans a failed tool's error and logs the finding"
 DIRECT_CLAIM = (
     "The packaged hook's message reaches the owner's terminal and not the model, "
@@ -71,10 +79,12 @@ def _counters(ev: Evidence) -> dict[str, int]:
     return state.read_counters(_root(ev)) if _root(ev).is_dir() else {}
 
 
+def _events(ev: Evidence) -> list[dict]:
+    return state.read_events(_root(ev)) if _root(ev).is_dir() else []
+
+
 def _findings(ev: Evidence) -> list[dict]:
-    if not _root(ev).is_dir():
-        return []
-    return [e for e in state.read_events(_root(ev)) if e.get("finding_id") is not None]
+    return [e for e in _events(ev) if e.get("finding_id") is not None]
 
 
 def _high(ev: Evidence, kind: str = "PostToolUse") -> list[dict]:
@@ -117,8 +127,10 @@ def result_check(*, oversized: bool = False) -> Check:
     return check
 
 
-def clean_check(tool: str) -> Check:
-    """The baseline: a benign tool ran, the packaged hook ran, and nothing was flagged."""
+def clean_check(tool: str, *, partial: bool = False) -> Check:
+    """The baseline: a benign tool ran, the packaged hook ran, and nothing was flagged.
+
+    With ``partial``, the result must also be counted as partly scanned."""
 
     def check(ev: Evidence) -> tuple[Outcome, str]:
         if tool not in ev.calls:
@@ -127,6 +139,8 @@ def clean_check(tool: str) -> Check:
         if counters.get("results_delivered", 0) == 0:
             return "inconclusive", f"the packaged hook recorded no result; counters {counters}"
         problems = []
+        if partial and counters.get("partly_scanned", 0) != 1:
+            problems.append("the result was not counted as partly scanned")
         if _findings(ev):
             problems.append(f"{len(_findings(ev))} finding(s) logged")
         if checks.any_request_has(ev, NOTE_PREFIX):
@@ -140,6 +154,32 @@ def clean_check(tool: str) -> Check:
         return "shown", f"benign {tool}: no finding, message, note or notification; {counters}"
 
     return check
+
+
+def check_over_budget(ev: Evidence) -> tuple[Outcome, str]:
+    """Shown when the result was counted partly scanned with a budget gap on record, and the
+    directive in the scanned part still gave a high finding and the plain model note."""
+    if "echo_directive" not in ev.calls:
+        return "inconclusive", f"the directive tool never ran; calls: {ev.calls}"
+    counters = _counters(ev)
+    gaps = [
+        e
+        for e in _events(ev)
+        if e.get("finding_id") is None
+        and e.get("tool_use_id") == CALL_ID
+        and e.get("outcome") == "partial"
+        and e.get("reason") in BUDGET_REASONS
+    ]
+    high = _high(ev)
+    note = _later_has(ev, MODEL_NOTE)
+    oversized_note = _later_has(ev, OVERSIZED_EXTRA)
+    partly = counters.get("results_delivered", 0) == 1 and counters.get("partly_scanned", 0) == 1
+    detail = (
+        f"counters {counters}; budget gap records: {len(gaps)}; high events: {len(high)}; "
+        f"note in the next request: {note}; oversized note: {oversized_note}"
+    )
+    ok = partly and gaps and high and note and not oversized_note
+    return ("shown" if ok else "not_shown"), detail
 
 
 def check_error(ev: Evidence) -> tuple[Outcome, str]:
@@ -188,7 +228,7 @@ def check_readback(ev: Evidence) -> tuple[Outcome, str]:
     if not path.is_file():
         return "inconclusive", "the show command was not run"
     done = json.loads(path.read_text(encoding="utf-8"))
-    spans = [s for s in SPAN.findall(done["stdout"]) if s.strip() and s in DIRECTIVE]
+    spans = [s for s in SPAN.findall(done["stdout"]) if len(s) >= MIN_SPAN and s in DIRECTIVE]
     detail = f"show exited {done['exit']}; canary spans printed: {len(spans)}"
     return ("shown" if done["exit"] == 0 and spans else "not_shown"), detail
 
@@ -261,6 +301,7 @@ def _scenario(
     *,
     hooks: Iterable[HookSpec] = OBSERVE,
     after=None,
+    baseline_check: Check | None = None,
 ) -> Scenario:
     base = Scenario(
         name,
@@ -280,7 +321,7 @@ def _scenario(
         base,
         name=f"{name}-baseline",
         script=_script(_call(benign)),
-        check=clean_check(benign),
+        check=baseline_check or clean_check(benign),
         after=None,
     )
     return dataclasses.replace(base, baseline=baseline)
@@ -311,11 +352,19 @@ PACKAGED: list[Scenario] = [
         "echo_split",
     ),
     _scenario(
-        "pkg-result-big",
+        "pkg-result-large-in-budget",
         RESULT_CLAIM,
         _call("echo_directive", {"shape": "big"}),
         result_check(oversized=True),
         "echo_big",
+    ),
+    _scenario(
+        "pkg-result-over-budget",
+        OVER_BUDGET_CLAIM,
+        _call("echo_directive", {"shape": "over-budget"}),
+        check_over_budget,
+        "echo_big",
+        baseline_check=clean_check("echo_big", partial=True),
     ),
     _scenario("pkg-error", ERROR_CLAIM, _call("fail_directive"), check_error, "fail_tool"),
     _scenario(
@@ -356,7 +405,7 @@ def to_receipts(
             claude_version,
             plugin_version,
             "terminal" if r.name in TERMINAL else "headless",
-            PERMISSION_MODE,
+            TERMINAL_MODE if r.name in TERMINAL else HEADLESS_MODE,
         )
         for r in results
         if r.name in names

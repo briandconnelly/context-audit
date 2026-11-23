@@ -29,10 +29,12 @@ from context_audit.inventory import (  # noqa: E402
 )
 from context_audit.receipts import capability, installed_claude_version  # noqa: E402
 from context_audit.report import (  # noqa: E402
+    CAPABILITY_SCOPE,
     FINDING_ID,
     READ_KINDS,
     TOOL_SURFACES,
     TOTAL_UNKNOWN,
+    VERSION_UNKNOWN,
     escape,
     model_report,
 )
@@ -69,9 +71,14 @@ def _open_state() -> Path:
     return root
 
 
-def _capability(root: Path) -> list[dict]:
-    """Receipts in the state directory that match the installed Claude Code and this plugin."""
-    return capability(root, installed_claude_version(), __version__)
+def _capability(root: Path) -> dict:
+    """model_report arguments from the receipts that match the installed Claude Code and
+    this plugin."""
+    version = installed_claude_version()
+    return {
+        "capability": capability(root, version, __version__),
+        "claude_version_known": version is not None,
+    }
 
 
 def _scan_source(source: Source, root: Path) -> tuple[list[Field], list[Finding]]:
@@ -88,13 +95,15 @@ def _print_selftest(results: list[SelfTest]) -> None:
 
 def _print_coverage(rep: dict) -> None:
     print("Capability (per behaviour):")
-    reasons = []
     for c in rep["capability"]:
-        print(f"  {c['behaviour']}: {c['status']}")
-        if c.get("reason") and c["reason"] not in reasons:
-            reasons.append(c["reason"])
-    for r in reasons:
-        print(f"  {r}")
+        where = ""
+        if c["status"] != "unverified":
+            mode = c["permission_mode"] + (" mode" if c["permission_mode"] == "default" else "")
+            where = f" ({c['frontend']}, {mode})"
+        print(f"  {c['behaviour']}: {c['status']}{where}")
+    for m in (CAPABILITY_SCOPE, VERSION_UNKNOWN):
+        if m in rep["messages"]:
+            print(f"  {m}")
     print("Observation (counts, not a verdict):")
     for k, v in rep["observation"].items():
         print(f"  {k}: {v}")
@@ -136,7 +145,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         findings=found,
         log_records=log,
         trimmed=(root / "trimmed").exists(),
-        capability=_capability(root),
+        **_capability(root),
     )
     if args.json:
         print(json.dumps(rep, ensure_ascii=True, indent=2))
@@ -145,7 +154,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         _print_coverage(rep)
         _print_owner_findings(rep, found, log)
         for m in rep["messages"]:
-            if m != TOTAL_UNKNOWN:  # already printed with the observation
+            if m not in (TOTAL_UNKNOWN, CAPABILITY_SCOPE, VERSION_UNKNOWN):  # printed above
                 print(m)
     if rep["voided"]:
         return EXIT_SELFTEST
@@ -209,7 +218,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         findings=[],
         log_records=[],
         trimmed=trimmed.exists(),
-        capability=_capability(root),
+        **_capability(root),
     )
     print(f"State directory: {escape(str(root))}")
     _print_selftest(results)

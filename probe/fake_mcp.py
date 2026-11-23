@@ -53,10 +53,17 @@ def _directive(shape: str) -> dict[str, Any]:
         line = "x" * 79 + "\n"
         fill = (line * (DIRECTIVE_BIG_SIZE // len(line) + 1))[: DIRECTIVE_BIG_SIZE - len(d) - 2]
         return _text(fill + ".\n" + d)
+    if shape == "over-budget":
+        # The directive near the start, inside the part the scanner reads; the whole result
+        # is over the scanner's 150,000-byte budget.
+        head = f"Here is the value. {d}\n"
+        line = "x" * 79 + "\n"
+        fill = (line * (BIG_SIZE // len(line) + 1))[: BIG_SIZE - len(head)]
+        return _text(head + fill)
     return _text(f"Here is the value. {d}")
 
 
-SHAPES = ("text", "structured", "split", "big")
+SHAPES = ("text", "structured", "split", "big", "over-budget")
 
 RESULTS = {
     "echo_text": lambda: _text(

@@ -2,25 +2,41 @@
 
 The probe writes ``receipts.json`` into the state directory; `status` and `scan` read it.
 A receipt counts only when it matches both the installed Claude Code version and this
-plugin's version; every other behaviour is reported ``unverified``.
+plugin's version, and only for the frontend and permission mode it was taken in; every
+other behaviour is reported ``unverified``.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
+import select
+import signal
+import stat
 import subprocess
+import time
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
-from context_audit.report import CAPABILITY_BEHAVIOURS
+from context_audit.report import (
+    CAPABILITY_BEHAVIOURS,
+    FRONTENDS,
+    PERMISSION_MODES,
+    VERSION_UNKNOWN,
+    unverified_entry,
+)
+
+__all__ = ["VERSION_UNKNOWN", "Receipt", "capability", "read_receipts", "write_receipts"]
 
 RECEIPT_STATUSES = ("shown", "not_shown", "inconclusive")
-NO_RECEIPT = "No receipt matches this Claude Code version and plugin version."
-VERSION_UNKNOWN = "The installed Claude Code version is unknown, so no receipt can match."
+# When receipts for one behaviour, frontend and mode disagree, the least favourable wins.
+_WORST_FIRST = ("not_shown", "inconclusive", "shown")
+MAX_BYTES = 1024 * 1024
 _VERSION = re.compile(r"^(\d+(?:\.\d+)+)(?: \(Claude Code\))?$")
-VERSION_TIMEOUT = 5.0
+VERSION_TIMEOUT = 2.0
+VERSION_MAX_BYTES = 200
 
 
 @dataclass(frozen=True)
@@ -29,8 +45,8 @@ class Receipt:
     status: str  # one of RECEIPT_STATUSES
     claude_version: str
     plugin_version: str
-    frontend: str  # "terminal" | "headless"
-    permission_mode: str
+    frontend: str  # one of FRONTENDS
+    permission_mode: str  # one of PERMISSION_MODES
 
 
 _KEYS = tuple(f.name for f in fields(Receipt))
@@ -38,9 +54,11 @@ _KEYS = tuple(f.name for f in fields(Receipt))
 
 def _valid(r: Receipt) -> bool:
     return (
-        r.behaviour in CAPABILITY_BEHAVIOURS
+        all(isinstance(getattr(r, k), str) for k in _KEYS)
+        and r.behaviour in CAPABILITY_BEHAVIOURS
         and r.status in RECEIPT_STATUSES
-        and all(isinstance(getattr(r, k), str) for k in _KEYS)
+        and r.frontend in FRONTENDS
+        and r.permission_mode in PERMISSION_MODES
     )
 
 
@@ -51,47 +69,71 @@ def write_receipts(root: Path, receipts: list[Receipt]) -> None:
         raise ValueError(f"invalid receipt(s): {bad}")
     path = root / "receipts.json"
     tmp = root / "receipts.json.tmp"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    tmp.unlink(missing_ok=True)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump({"receipts": [asdict(r) for r in receipts]}, f, indent=1)
     os.replace(tmp, path)
 
 
-def read_receipts(root: Path) -> list[Receipt]:
-    """Every well-formed receipt in root/receipts.json; anything else is ignored."""
+def _read_bytes(path: Path) -> bytes | None:
+    """A regular, non-symlinked file of at most MAX_BYTES, else None."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
-        data = json.loads((root / "receipts.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_BYTES:
+            return None
+        data = os.read(fd, MAX_BYTES + 1)
+    finally:
+        os.close(fd)
+    return data if len(data) <= MAX_BYTES else None
+
+
+def read_receipts(root: Path) -> list[Receipt]:
+    """Every well-formed receipt in root/receipts.json; any failure reads as none."""
+    try:
+        raw = _read_bytes(root / "receipts.json")
+        if raw is None:
+            return []
+        data = json.loads(raw.decode("utf-8"))
+        items = data.get("receipts") if isinstance(data, dict) else None
+        out = []
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict) or set(item) != set(_KEYS):
+                continue
+            r = Receipt(**{k: item[k] for k in _KEYS})
+            if _valid(r):
+                out.append(r)
+        return out
+    except Exception:  # noqa: BLE001 - a hostile or broken file reads as no receipts
         return []
-    items = data.get("receipts") if isinstance(data, dict) else None
-    out = []
-    for item in items if isinstance(items, list) else []:
-        if not isinstance(item, dict) or set(item) != set(_KEYS):
-            continue
-        r = Receipt(**{k: item[k] for k in _KEYS})
-        if _valid(r):
-            out.append(r)
-    return out
 
 
 def capability(root: Path, claude_version: str | None, plugin_version: str) -> list[dict]:
-    """Per behaviour, the status from a receipt matching both versions, else unverified."""
-    if claude_version is None:
-        return [
-            {"behaviour": b, "status": "unverified", "reason": VERSION_UNKNOWN}
-            for b in CAPABILITY_BEHAVIOURS
-        ]
-    found = {
-        r.behaviour: r.status
-        for r in read_receipts(root)
-        if r.claude_version == claude_version and r.plugin_version == plugin_version
-    }
-    return [
-        {"behaviour": b, "status": found[b]}
-        if b in found
-        else {"behaviour": b, "status": "unverified", "reason": NO_RECEIPT}
-        for b in CAPABILITY_BEHAVIOURS
-    ]
+    """One entry per behaviour and (frontend, permission mode) with a matching receipt,
+    and an unverified entry for each behaviour with none."""
+    found: dict[tuple[str, str, str], str] = {}
+    if claude_version is not None:
+        for r in read_receipts(root):
+            if r.claude_version != claude_version or r.plugin_version != plugin_version:
+                continue
+            key = (r.behaviour, r.frontend, r.permission_mode)
+            found[key] = min(found.get(key, "shown"), r.status, key=_WORST_FIRST.index)
+    out: list[dict] = []
+    for b in CAPABILITY_BEHAVIOURS:
+        here = sorted(k for k in found if k[0] == b)
+        if not here:
+            out.append(unverified_entry(b))
+        for key in here:
+            out.append(
+                {
+                    "behaviour": b,
+                    "status": found[key],
+                    "frontend": key[1],
+                    "permission_mode": key[2],
+                }  # fmt: skip
+            )
+    return out
 
 
 def parse_claude_version(stdout: str) -> str | None:
@@ -99,17 +141,53 @@ def parse_claude_version(stdout: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _read_capped(proc: subprocess.Popen[bytes], deadline: float) -> bytes | None:
+    """Standard output up to EOF, or None past the deadline or VERSION_MAX_BYTES."""
+    assert proc.stdout is not None
+    fd = proc.stdout.fileno()
+    out = b""
+    while True:
+        left = deadline - time.monotonic()
+        if left <= 0 or not select.select([fd], [], [], left)[0]:
+            return None
+        chunk = os.read(fd, VERSION_MAX_BYTES + 1 - len(out))
+        if not chunk:
+            return out
+        out += chunk
+        if len(out) > VERSION_MAX_BYTES:
+            return None
+
+
 def installed_claude_version() -> str | None:
-    """`claude --version`, or None on any failure. For the CLI only, never the hook."""
+    """`claude --version`, or None on any failure. For the CLI only, never the hook.
+
+    Reads at most VERSION_MAX_BYTES of standard output within VERSION_TIMEOUT seconds."""
+    deadline = time.monotonic() + VERSION_TIMEOUT
     try:
-        done = subprocess.run(
+        proc = subprocess.Popen(
             ["claude", "--version"],
-            capture_output=True,
-            text=True,
-            timeout=VERSION_TIMEOUT,
             stdin=subprocess.DEVNULL,
-            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
         )
-    except (OSError, subprocess.SubprocessError, ValueError):
+    except (OSError, ValueError, subprocess.SubprocessError):
         return None
-    return parse_claude_version(done.stdout) if done.returncode == 0 else None
+    try:
+        out = _read_capped(proc, deadline)
+        code = None
+        if out is not None:
+            code = proc.wait(timeout=max(0.01, deadline - time.monotonic()))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    finally:
+        if proc.poll() is None:
+            with contextlib.suppress(OSError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            with contextlib.suppress(subprocess.SubprocessError):
+                proc.wait(timeout=1)
+        if proc.stdout is not None:
+            proc.stdout.close()
+    if out is None or code != 0:
+        return None
+    return parse_claude_version(out.decode("utf-8", "replace"))
