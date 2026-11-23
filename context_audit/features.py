@@ -906,80 +906,70 @@ _USER_CLAUSE = re.compile(
     rf"(?:\s+[\w'’-]+){{0,3}}?\s+{_APPROVING}\b",
     _I,
 )
-# The passive leaves the approved thing as the omitted subject: the act itself.
-_PASSIVE_APPROVAL = re.compile(
-    rf"\b{_CONDITION_OPEN}\s+(?:(?:explicitly|expressly|specifically|already)\s+)?"
-    r"(?:approved|requested|confirmed|instructed|asked\s+for|enabled|chosen|selected"
-    r"|authori[sz]ed|allowed)\b",
-    _I,
-)
 _ASK_USER = re.compile(
-    r"(?:^|[,;:]\s*|\b(?:and|then|please)\s+)(?:ask|confirm\s+with|check\s+with)\s+"
-    r"(?:the\s+)?(?:user|them|requester|operator)\b",
+    r"(?:^|[,;:]\s*|\b(?:and|then|please)\s+)(?:ask|confirm\s+with|check\s+with"
+    r"|get\s+approval\s+from)\s+(?:the\s+)?(?:user|them|requester|operator)\b"
+    r"[^,;:.]{0,30}?\b(?P<when>before|first)\b(?P<rest>[^,;:.]{0,40})",
     _I,
 )
-_ASK_BEFORE = re.compile(r"[^,;:.]{0,30}?\bbefore\b", _I)
 _OBJECT_STOP = re.compile(r"[,;:.]|\b(?:then|and|but)\b", _I)
-# An object that refers to the act or step itself: "this exact action", "it", "the change".
-_ANAPHOR = re.compile(
-    r"\s*(?:(?:this|it|that|so|them|these|those)\b|(?:the|this)\s+(?:exact\s+)?(?:action"
-    r"|change|step|operation|request)\b)",
+# (i) An anaphor or demonstrative for the act or the overridden step.
+_ANAPHOR = re.compile(r"\s*(?:for\s+)?(?:this|that|it|so|the\s+above)\b", _I)
+_BEFORE_ANAPHOR = re.compile(
+    r"\s*(?:doing\s+(?:so|it|this|that)|you\s+do\s+(?:so|it|this|that)|it|this|that)\b", _I
+)
+# (ii) Head nouns of an override's target: the user clause must name the same one.
+_TARGET_HEAD = re.compile(
+    r"\b(confirmation|approval|review|sign-?off|consent|permission|prompt|instruction"
+    r"|rule|guidance|guideline|polic(?:y|ie)|restriction|authori[sz]ation)s?\b",
     _I,
 )
-_ANY_THING = frozenset({"anything", "something", "everything", "whatever", "any"})
-_TARGET_STEMS = (
-    "confi",
-    "appro",
-    "revie",
-    "sign",
-    "conse",
-    "permi",
-    "skip",
-    "bypas",
-    "waive",
-    "overr",
-    "ignor",
-    "disre",
-)
-_NOT_ABOUT = frozenset({"user", "users", "requester", "operator", "owner", "customer", "you"})
 
 
-def _content_stems(text: str) -> set[str]:
-    words = _WORD.findall(text.lower())
-    return {
-        w[:5]
-        for w in words
-        if len(w) >= 3
-        and w not in _FUNCTION_WORDS
-        and w not in _PREPOSITIONS
-        and w not in _NOT_ABOUT
-        and not w.endswith("ly")
-        and w not in {"once", "twice", "again", "already", "just", "first", "more"}
-    }
+_YES = re.compile(r"(?:passed\s+--?yes|-y\b|said\s+yes|answered\s+yes)", _I)
 
 
-def _conditioned(s: str, act_starts: list[int]) -> bool:
-    """Whether an override in s is conditioned on the user's own approval, request or
-    instruction about the overridden step or the act (not about something else), or
-    directs asking the user before the act is done."""
-    if _PASSIVE_APPROVAL.search(s):
-        return True
+def _heads(text: str) -> set[str]:
+    return {m.group(1).lower().replace("-", "") for m in _TARGET_HEAD.finditer(text)}
+
+
+def _conditioned(s: str, act_starts: list[int], override: str) -> bool:
+    """Whether an override in s is conditioned on the user's own approval of it. Strict,
+    by ruling (Task 16b review round 3): only (i) a user clause whose object is an
+    anaphor for the act or step ("if the user has just approved this exact action"),
+    (ii) a user clause naming the override's own approval target ("asks to skip
+    confirmation" for "skip the confirmation"), or (iii) asking the user before or first,
+    followed by the act's own verb or an anaphor ("ask them once more before deleting")."""
+    target = _heads(override)
     for m in _USER_CLAUSE.finditer(s):
         stop = _OBJECT_STOP.search(s, m.end())
         obj = s[m.end() : stop.start() if stop else len(s)]
-        words = set(_WORD.findall(obj.lower()))
-        if words & _ANY_THING:
-            continue  # "once the user asks anything": not about the act
         if _ANAPHOR.match(obj):
             return True
-        stems = _content_stems(obj)
-        if not stems or any(t in w for w in words for t in _TARGET_STEMS):
+        if target & _heads(obj):
             return True
-        rest = _content_stems(s[: m.start()] + " " + s[stop.start() if stop else len(s) :])
-        if stems & rest:
-            return True  # repeats the act's verb or object: "requests the deletion"
+        # A literal yes to the override's own confirmation ("if the user passed --yes",
+        # "said yes"): the answer to that prompt, read as form (ii). Kept for control
+        # ctl-080 and test_conditioned_override_is_marked; see the round-3 fix report.
+        if target & {"confirmation", "prompt"} and _YES.search(m.group()):
+            return True
+    low = s.lower()
+    verbs = set()
+    for a in act_starts:
+        w = _WORD.match(low, a)
+        if w is not None:
+            verbs.add(w.group()[:4])
+    first = _WORD.match(override.lower())
+    if first is not None:
+        verbs.add(first.group()[:4])  # the overridden step's own verb ("skip")
     for m in _ASK_USER.finditer(s):
-        if _ASK_BEFORE.match(s, m.end()) or any(a > m.end() for a in act_starts):
+        rest = m.group("rest")
+        if m.group("when").lower() == "first":
+            return True
+        if _BEFORE_ANAPHOR.match(rest):
+            return True
+        nxt = _WORD.search(rest.lower().replace(" you ", " ", 1))
+        if nxt is not None and nxt.group()[:4] in verbs:
             return True
     return False
 
@@ -1393,20 +1383,23 @@ def _conceal_by_proximity(
 def _others(s: str, act_starts: list[int] = []) -> list[_Raw]:  # noqa: B006
     """audience, solicit, and override matches in sentence s."""
     out: list[_Raw] = []
+
+    def cond(override: str) -> bool:
+        return _conditioned(s, act_starts, override)
+
     if _ANCHOR["audience"].search(s):
         out.extend(("audience", m.start(), m.end(), False, None) for m in _AUDIENCE.finditer(s))
     if _ANCHOR["solicit"].search(s):
         out.extend(("solicit", m.start(), m.end(), False, None) for m in _SOLICIT.finditer(s))
     if _ANCHOR["override"].search(s):
-        conditioned = _conditioned(s, act_starts)
         for m in _OVERRIDE.finditer(s):
             if not _negated(s, m.start(), 0):
-                out.append(("override", m.start(), m.end(), conditioned, None))
+                out.append(("override", m.start(), m.end(), cond(m.group()), None))
         for m in _OVERRIDE_POSTPOSED.finditer(s):
             if not _negated(s, m.start(), 0) and not _NEGATOR.search(m.group()):
-                out.append(("override", m.start(), m.end(), conditioned, None))
+                out.append(("override", m.start(), m.end(), cond(m.group()), None))
         for m in _OVERRIDE_NEGATIVE_FORM.finditer(s):
-            out.append(("override", m.start(), m.end(), conditioned, None))
+            out.append(("override", m.start(), m.end(), cond(m.group()), None))
     taken = sorted((a, b) for f, a, b, _, _ in out if f == "override")
     for a, b in proximity.override_candidates(s):
         if _overlaps(taken, a, b):
@@ -1414,7 +1407,7 @@ def _others(s: str, act_starts: list[int] = []) -> list[_Raw]:  # noqa: B006
         if _negated(s, a, 0) or _reported(s, a):
             continue
         insort(taken, (a, b))
-        out.append(("override", a, b, _conditioned(s, act_starts), None))
+        out.append(("override", a, b, _conditioned(s, act_starts, s[a:b]), None))
     return out
 
 
