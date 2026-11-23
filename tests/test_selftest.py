@@ -39,12 +39,14 @@ def test_a_broken_detector_fails_the_selftest(tmp_path, monkeypatch):
 
 
 def test_an_overeager_detector_fails_the_selftest(tmp_path, monkeypatch):
-    real = rules.judge
+    # R1 (final fix wave): scan_fields now judges through judge_until with its own deadline.
+    real = rules.judge_until
 
     def all_high(*a, **k):
-        return [replace(f, severity="high") for f in real(*a, **k)]
+        found, done = real(*a, **k)
+        return [replace(f, severity="high") for f in found], done
 
-    monkeypatch.setattr(scan, "judge", all_high)
+    monkeypatch.setattr(scan, "judge_until", all_high)
     results = run_selftest(tmp_path)
     assert not any(r.passed for r in results)
     assert all(r.flagged for r in results)

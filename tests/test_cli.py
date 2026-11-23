@@ -240,3 +240,27 @@ def test_unknown_claude_version_says_so(env, capsys, monkeypatch):
     rep = json.loads(capsys.readouterr().out)
     assert {c["status"] for c in rep["capability"]} == {"unverified"}
     assert VERSION_UNKNOWN in rep["messages"]
+
+
+def test_a_cut_skill_keeps_its_high_and_is_counted_partly_scanned(env, capsys):
+    # C1 / R1 / R2: canary at the top, then more prose than the byte budget allows.
+    prose = "The station reported light rain and a mild westerly wind this morning. " * 2300
+    add_skill(env["claude"], "big", CANARY + "\n" + prose)
+    add_skill(env["claude"], "small", "Formats tables.")
+    assert run(env, "scan", "--json") == 1
+    rep = json.loads(capsys.readouterr().out)
+    assert any(f["severity"] == "high" for f in rep["findings"])
+    assert rep["sources"]["scanned"] == 1
+    assert rep["sources"]["partly_scanned"] == 1
+    recs = [e for e in state.read_events(env["home"]) if e["event"] == "scan"]
+    assert recs and {(e["outcome"], e["reason"]) for e in recs} == {("partial", "byte-budget")}
+
+
+def test_a_source_unreadable_at_scan_time_is_not_counted_scanned(env, capsys, monkeypatch):
+    # R2: a source that cannot be read when scanned is counted unreadable, with the message.
+    add_skill(env["claude"], "gone", "Formats tables.")
+    monkeypatch.setattr(cli, "read_source", lambda s: ([], False))
+    assert run(env, "scan", "--json") == 0
+    rep = json.loads(capsys.readouterr().out)
+    assert (rep["sources"]["scanned"], rep["sources"]["unreadable"]) == (0, 1)
+    assert report.NOT_FULLY_SCANNED in rep["messages"]

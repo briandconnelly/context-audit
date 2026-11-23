@@ -25,7 +25,7 @@ from context_audit.inventory import (  # noqa: E402
     Source,
     default_roots,
     enumerate_sources,
-    read_fields,
+    read_source,
 )
 from context_audit.receipts import capability, installed_claude_version  # noqa: E402
 from context_audit.report import (  # noqa: E402
@@ -39,7 +39,7 @@ from context_audit.report import (  # noqa: E402
     model_report,
 )
 from context_audit.rules import Finding  # noqa: E402
-from context_audit.scan import scan_fields  # noqa: E402
+from context_audit.scan import STATIC_BUDGET, ScanResult, scan_fields  # noqa: E402
 from context_audit.selftest import SelfTest, run_selftest  # noqa: E402
 from context_audit.text import Field  # noqa: E402
 
@@ -81,9 +81,12 @@ def _capability(root: Path) -> dict:
     }
 
 
-def _scan_source(source: Source, root: Path) -> tuple[list[Field], list[Finding]]:
-    fields = read_fields(source)
-    return fields, list(scan_fields(fields, state_root=root).findings)
+def _scan_source(source: Source, root: Path) -> tuple[list[Field], ScanResult | None]:
+    """The source's fields and its scan, or None for the scan when it cannot be read."""
+    fields, readable = read_source(source)
+    if not readable:
+        return [], None
+    return fields, scan_fields(fields, state_root=root, budget=STATIC_BUDGET)
 
 
 def _print_selftest(results: list[SelfTest]) -> None:
@@ -127,15 +130,23 @@ def cmd_scan(args: argparse.Namespace) -> int:
     results = run_selftest(root)
     sources = enumerate_sources(_roots(args))
     found: list[tuple[Finding, Source]] = []
+    outcomes: dict[str, str] = {}
+    results_by_source: dict[str, ScanResult] = {}
     for s in sources:
         if s.kind in READ_KINDS and not s.skipped:
-            found.extend((f, s) for f in _scan_source(s, root)[1])
+            result = _scan_source(s, root)[1]
+            if result is None:
+                outcomes[s.source_id] = "unreadable"
+                continue
+            outcomes[s.source_id] = result.outcome
+            results_by_source[s.source_id] = result
+            found.extend((f, s) for f in result.findings)
     on_record = {e.get("finding_id") for e in state.read_events(root) if e.get("event") == "scan"}
     for f, s in found:
         if f.finding_id in on_record:
             continue
         on_record.add(f.finding_id)
-        state.append_event(root, _scan_record(f, s))
+        state.append_event(root, _scan_record(f, s, results_by_source[s.source_id]))
     events = state.read_events(root)
     log = [e for e in events if e.get("event") in TOOL_SURFACES]
     rep = model_report(
@@ -145,6 +156,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         findings=found,
         log_records=log,
         trimmed=(root / "trimmed").exists(),
+        outcomes=outcomes,
         **_capability(root),
     )
     if args.json:
@@ -161,7 +173,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
     return EXIT_HIGH if any(f.severity == "high" for f, _ in found) else EXIT_OK
 
 
-def _scan_record(f: Finding, s: Source) -> dict:
+def _scan_record(f: Finding, s: Source, result: ScanResult) -> dict:
     from datetime import UTC, datetime
 
     return {
@@ -177,8 +189,8 @@ def _scan_record(f: Finding, s: Source) -> dict:
         "rule_version": f.rule_version,
         "digest": f.digest,
         "locator": f.locator,
-        "outcome": "complete",
-        "reason": None,
+        "outcome": result.outcome,
+        "reason": result.reason or None,
     }
 
 
@@ -260,8 +272,10 @@ def _show_static(record: dict, fid: str, args: argparse.Namespace, root: Path) -
     )
     if source is None:
         raise _Unavailable("the source is no longer in the inventory")
-    fields, findings = _scan_source(source, root)
-    match = next((f for f in findings if f.finding_id == fid), None)
+    fields, result = _scan_source(source, root)
+    if result is None:
+        raise _Unavailable(f"the file cannot be read now: {escape(str(path))}")
+    match = next((f for f in result.findings if f.finding_id == fid), None)
     if match is None:
         raise _Unavailable(f"the file has changed since the scan: {escape(str(path))}")
     print(f"{source.kind} {escape(source.name)} at {escape(str(path))}")

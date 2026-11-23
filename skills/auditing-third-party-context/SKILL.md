@@ -22,6 +22,7 @@ description: Use when the owner asks to audit installed skills, plugins, or MCP 
 3. If `voided` is not empty, say before anything else that for each entry point it lists, a missing finding is not evidence that nothing is there.
 
 4. Present the report's `findings` grouped by `severity`, `high` first and then `review`, and after them the coverage gaps: the `sources`, `observation`, and `capability` counts and every entry in `messages`.
+   Report every source counted under `sources.partly_scanned` or `sources.unreadable` as a gap: a missing finding in it is not evidence that nothing is there.
 
 5. Never read a source file, the event log, or a transcript to look at a finding.
 

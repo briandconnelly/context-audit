@@ -441,3 +441,21 @@ def test_concurrent_hooks_share_one_state_directory(tmp_path):
     assert counters(home) == {"results_delivered": 20, "fully_scanned": 20}
     lines = (home / "events.jsonl").read_text().splitlines()
     assert len(lines) == 20 and all(json.loads(x)["severity"] == "review" for x in lines)
+
+
+def test_canary_before_long_prose_warns_and_is_partial_through_the_launcher(tmp_path):
+    # C1 / R1: the motivating canary as the first line, then more ordinary prose than the
+    # byte budget allows, so the scan is always partial; the time cut may fall as well.
+    home = tmp_path / "state"
+    launcher = Path(__file__).resolve().parent.parent / "bin" / "context-audit-hook"
+    prose = "The station reported light rain and a mild westerly wind this morning. " * 2300
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
+    env["CONTEXT_AUDIT_HOME"] = str(home)
+    data = json.dumps(event(text=CANARY + "\n" + prose))
+    p = subprocess.run(["/bin/sh", str(launcher)], input=data, capture_output=True, text=True,
+                       env=env, timeout=30)  # fmt: skip
+    out = json.loads(p.stdout)
+    assert out["systemMessage"].startswith("context-audit: flagged a third-party directive")
+    logged = events(home)
+    assert any(e["severity"] == "high" for e in logged)
+    assert {e["outcome"] for e in logged} == {"partial"}

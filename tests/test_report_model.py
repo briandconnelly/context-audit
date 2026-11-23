@@ -99,7 +99,10 @@ def test_model_report_keys_are_closed(tmp_path):
         "not_scanned", "unmatched_requests", "total_results",
     }  # fmt: skip
     assert rep["observation"]["total_results"] == "unknown"
-    assert set(rep["sources"]) == {"scanned", "skipped", "mcp_servers_not_listed"}
+    # R2 (final fix wave): partly scanned and unreadable sources are counted apart.
+    assert set(rep["sources"]) == {
+        "scanned", "partly_scanned", "unreadable", "skipped", "mcp_servers_not_listed",
+    }  # fmt: skip
     for f in rep["findings"]:
         assert set(f) == {"finding_id", "source", "kind", "surface", "features", "severity"}
     ids = {f["finding_id"] for f in rep["findings"]}

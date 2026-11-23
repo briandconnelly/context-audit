@@ -2,7 +2,9 @@
 
 Budgets bound the work: fields are scanned in order until the byte, field, or time
 budget runs out. Nothing past the cut is scanned or reported, and the outcome is then
-`partial` with the reason of the budget that ran out.
+`partial` with the reason of the budget that ran out. Findings made before a cut are kept:
+judging has its own allowance (`judge_seconds`), so a detection overrun never leaves it
+without time.
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from context_audit.features import Match, detect
-from context_audit.rules import HIGH_TABLE, Finding, judge
+from context_audit.rules import HIGH_TABLE, Finding, judge_until
 from context_audit.text import Field, has_second_reading, normalize
 
 _SENTENCE_END = re.compile(r"[.!?](?=\s|$)|\n")
@@ -26,7 +28,18 @@ class Budget:
     max_bytes: int = 150_000
     max_fields: int = 2_000
     max_depth: int = 32  # enforced by callers that walk nested content
-    max_seconds: float = 0.12
+    max_seconds: float = 0.12  # detection
+    # Judging, after detection; it is linear in the matches. None: a quarter of max_seconds.
+    judge_seconds: float | None = None
+
+    @property
+    def judge_allowance(self) -> float:
+        return self.max_seconds / 4 if self.judge_seconds is None else self.judge_seconds
+
+
+# The static scan (CLI `scan`) has no latency constraint: a larger time budget per source,
+# the same byte rule.
+STATIC_BUDGET = Budget(max_seconds=2.0, judge_seconds=1.0)
 
 
 @dataclass(frozen=True)
@@ -93,18 +106,22 @@ def scan_fields(
             break
         if reason:
             break
-    findings = (
-        judge(scanned, matches, state_root, deadline=deadline) if any(matches.values()) else []
-    )
-    if alt_fields:
+    if not reason and time.monotonic() > deadline:
+        reason = "time-budget"
+    # Judging gets its own deadline, so what detection found before a cut is still judged.
+    judge_deadline = time.monotonic() + budget.judge_allowance
+    findings: list[Finding] = []
+    judged = True
+    if any(matches.values()):
+        findings, judged = judge_until(scanned, matches, state_root, judge_deadline)
+    if alt_fields and judged:
         fields = [alt_fields.get(i, f) for i, f in enumerate(scanned)]
         merged = {i: alt_matches.get(i, m) for i, m in matches.items()}
         if any(merged.values()):
-            alt = judge(fields, merged, state_root, deadline=deadline)
+            alt, judged = judge_until(fields, merged, state_root, judge_deadline)
             findings = _merge_alternate(findings, alt)
-    # The budget holds through judging too: a scan that ran past its deadline is never
-    # reported complete, whatever step overran.
-    if not reason and time.monotonic() > deadline:
+    # A scan whose judging overran is never reported complete; its findings so far stand.
+    if not reason and (not judged or time.monotonic() > judge_deadline):
         reason = "time-budget"
     outcome = "partial" if reason else "complete"
     return ScanResult(tuple(findings), outcome, reason, len(scanned))

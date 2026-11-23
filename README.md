@@ -113,7 +113,7 @@ The release gates were measured on 2026-11-23; the figures, tables, and caveats 
   That count was read after each of several fix rounds, so it is a lightly used validation signal, not a single blind reading; see "How the held-out sets were used" in the same document.
 - Review findings are not gated: generated benign results carry 193.6 per 100, and 663 of 1,000 carry at least one.
 
-Known limits, as that document states them: English only, apart from a few translated phrases; a directive written as a record line (a log line, commit subject, or step line) is review at most; text asserting the user approved "this" or "it" is review; concealment or override phrased outside the cue families is missed; and input that exhausts the scanner's 0.12-second budget is cut and marked partly scanned.
+Known limits, as that document states them: English only, apart from a few translated phrases; a directive written as a record line (a log line, commit subject, or step line) is review at most; text asserting the user approved "this" or "it" is review; concealment or override phrased outside the cue families is missed; and input that exhausts a budget is cut: findings made before the cut are kept and reported, and the rest is marked partly scanned. The hook detects for 0.12 seconds with a separate allowance for judging; `scan` allows 2 seconds per source; both stop at 150,000 bytes. `scan --json` counts sources as fully scanned, partly scanned, and unreadable separately.
 
 ## Not built
 

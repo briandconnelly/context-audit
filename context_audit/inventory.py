@@ -474,20 +474,28 @@ def _split_frontmatter(text: str) -> tuple[str, str, str]:
 
 
 def read_fields(source: Source, *, max_bytes: int = DEFAULT_MAX_BYTES) -> list[Field]:
+    return read_source(source, max_bytes=max_bytes)[0]
+
+
+def read_source(source: Source, *, max_bytes: int = DEFAULT_MAX_BYTES) -> tuple[list[Field], bool]:
+    """The source's fields, and whether it could be read now (False when it vanished,
+    changed type, or grew past the limit since enumeration)."""
     if source.skipped or source.root is None or source.path is None:
-        return []
+        return [], False
     if source.kind not in _BODY_SURFACE and source.kind != "hook_prompt":
-        return []
+        return [], False
     try:
         data, skipped = _read(source.root, source.path.relative_to(source.root), max_bytes)
-    except (_Absent, ValueError):
-        return []
+    except (_Absent, ValueError, OSError):
+        return [], False
     if skipped:
-        return []
+        return [], False
     sid = source.source_id
     if source.kind == "hook_prompt":
         prompts, _ = _hook_entries(_json(data))
-        return [Field(sid, "hook_prompt", loc, p, i) for i, (loc, p) in enumerate(prompts or [])]
+        return [
+            Field(sid, "hook_prompt", loc, p, i) for i, (loc, p) in enumerate(prompts or [])
+        ], True
     description, unparsed, body = _split_frontmatter(data.decode("utf-8", errors="replace"))
     fields: list[Field] = []
     for surface, locator, text in (
@@ -497,4 +505,4 @@ def read_fields(source: Source, *, max_bytes: int = DEFAULT_MAX_BYTES) -> list[F
     ):
         if text:
             fields.append(Field(sid, surface, locator, text, len(fields)))
-    return fields
+    return fields, True
