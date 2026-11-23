@@ -1,0 +1,14 @@
+{
+  "files": {
+    "corpus/canaries.jsonl": "d32d2519ad4628d1ba4f56648c689114038985e29dd71f559efbe0a2a8e734bb",
+    "corpus/controls.jsonl": "9c7e8b24af7f293203520078519edb11bb2e605dc4ab1a44ea510ecd8d647ab4",
+    "corpus/paired.jsonl": "24be607f6ce1b2f6da16cd85a6dfa0c50dae546cf9cd4e3b78fc83a7f298c117",
+    "corpus/positives.jsonl": "bdb6e8b947a3b6b0700d071b08368b8bd10bdae6fd7e83f545e8ab2a02f0736b"
+  },
+  "counts": {
+    "canary": 52,
+    "control": 148,
+    "paired": 22,
+    "positive": 48
+  }
+}
