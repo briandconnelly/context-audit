@@ -330,3 +330,114 @@ def test_hook_parses_on_the_old_interpreter(tmp_path):
         text=True,
     )
     assert (p.returncode, p.stderr) == (0, "")
+
+
+UNREADABLE = {
+    "systemMessage": "context-audit: a tool result could not be read and was not scanned. "
+    "See: context-audit status"
+}
+
+
+def run_bytes(home: Path, data: bytes) -> subprocess.CompletedProcess:
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
+    env["CONTEXT_AUDIT_HOME"] = str(home)
+    return subprocess.run(
+        [sys.executable, "-I", str(HOOK)],
+        input=data,
+        capture_output=True,
+        env=env,
+        cwd=home.parent,
+        timeout=60,
+    )
+
+
+def _assert_unreadable_gap(home: Path, p: subprocess.CompletedProcess, kind: str) -> None:
+    assert (p.returncode, p.stderr) == (0, b"")
+    assert json.loads(p.stdout) == UNREADABLE
+    assert counters(home) == {"results_delivered": 1, "not_scanned": 1}
+    [gap] = events(home)
+    assert set(gap) == KEYS
+    assert gap["event"] == kind and gap["outcome"] == "not_scanned"
+    assert gap["reason"] == "undecodable-event"
+    for k in ("session", "transcript", "tool_use_id", "source_id", "finding_id"):
+        assert gap[k] is None
+
+
+def test_deeply_nested_result_event_is_counted_and_reported(tmp_path):
+    home = tmp_path / "state"
+    head = '{"hook_event_name": "PostToolUse", "session_id": "s", "tool_response": '
+    data = (head + "[" * 100_000 + "]" * 100_000 + "}").encode()
+    _assert_unreadable_gap(home, run_bytes(home, data), "PostToolUse")
+
+
+def test_invalid_utf8_failure_event_is_counted_and_reported(tmp_path):
+    home = tmp_path / "state"
+    data = b'{"hook_event_name" :\n "PostToolUseFailure", "error": "\xff\xfe bad"}'
+    _assert_unreadable_gap(home, run_bytes(home, data), "PostToolUseFailure")
+
+
+def test_unparseable_non_result_event_stays_silent(tmp_path):
+    home = tmp_path / "state"
+    p = run_bytes(home, b'{"hook_event_name": "PreToolUse", "x": "\xff"}')
+    assert (p.returncode, p.stdout, p.stderr) == (0, b"", b"")
+    assert events(home) == [] and counters(home) == {}
+
+
+def test_scanner_error_is_counted_as_not_scanned(tmp_path, monkeypatch):
+    from context_audit import hook, scan
+
+    def boom(*a, **k):
+        raise RuntimeError("scanner bug")
+
+    monkeypatch.setattr(scan, "scan_fields", boom)
+    home = tmp_path / "state"
+    home.mkdir()
+    assert hook._handle_result(event(text=CANARY), "PostToolUse", home, home) is None
+    assert counters(home) == {"results_delivered": 1, "not_scanned": 1}
+    [gap] = events(home)
+    assert set(gap) == KEYS
+    assert (gap["outcome"], gap["reason"]) == ("not_scanned", "scanner-error")
+    assert gap["finding_id"] is None
+
+
+@pytest.mark.parametrize("text", ["Results: 3 rows.", CANARY])
+def test_state_path_that_is_a_file(tmp_path, text):
+    home = tmp_path / "state"
+    home.write_text("not a directory")
+    p = run(home, event(text=text))
+    assert (p.returncode, p.stderr) == (0, "")
+    if text == CANARY:
+        assert json.loads(p.stdout)["hookSpecificOutput"]["additionalContext"] == MODEL_NOTE
+    else:
+        assert p.stdout == ""
+    assert home.read_text() == "not a directory"
+
+
+def test_concurrent_hooks_share_one_state_directory(tmp_path):
+    home = tmp_path / "state"
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
+    env["CONTEXT_AUDIT_HOME"] = str(home)
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-I", str(HOOK)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+        for _ in range(20)
+    ]
+    data = json.dumps(event(text=REVIEW)).encode()
+    for p in procs:
+        assert p.stdin is not None
+        p.stdin.write(data)
+        p.stdin.close()
+    for p in procs:
+        assert p.wait(timeout=60) == 0
+        assert p.stdout is not None and p.stderr is not None
+        assert (p.stdout.read(), p.stderr.read()) == (b"", b"")
+        p.stdout.close()
+        p.stderr.close()
+    assert counters(home) == {"results_delivered": 20, "fully_scanned": 20}
+    lines = (home / "events.jsonl").read_text().splitlines()
+    assert len(lines) == 20 and all(json.loads(x)["severity"] == "review" for x in lines)

@@ -74,33 +74,76 @@ def _try(write, *args, **kwargs) -> None:
         write(*args, **kwargs)
 
 
+_EMPTY_FINDING = dict.fromkeys(
+    ("finding_id", "features", "severity", "rule_version", "digest", "locator")
+)
+UNREADABLE_MESSAGE = (
+    "context-audit: a tool result could not be read and was not scanned. See: context-audit status"
+)
+
+
+def _record_gap(root: Path, base: dict, reason: str) -> None:
+    """Count a result that was not scanned at all and put the gap on record."""
+    _try(state.bump, root, results_delivered=1, not_scanned=1)
+    record = {**base, **_EMPTY_FINDING, "outcome": "not_scanned", "reason": reason}
+    _try(state.append_event, root, record)
+
+
+def _result_event_name(raw: bytes) -> str | None:
+    """The result event named in bytes that did not parse, found without parsing them."""
+    import re
+
+    m = re.search(rb'"hook_event_name"\s*:\s*"(PostToolUse|PostToolUseFailure)"', raw)
+    return m.group(1).decode() if m else None
+
+
+def _handle_unreadable(raw: bytes) -> dict | None:
+    from datetime import UTC, datetime
+
+    kind = _result_event_name(raw)
+    if kind is None:
+        return None
+    try:
+        root = state.ensure_state(state.state_dir())
+    except (state.StateError, OSError):
+        root = None
+    if root:
+        base = dict.fromkeys(("session", "tool_use_id", "transcript", "source_id"))
+        base.update(ts=datetime.now(UTC).isoformat(), event=kind)
+        _record_gap(root, base, "undecodable-event")
+    return {"systemMessage": UNREADABLE_MESSAGE}
+
+
 def _handle_result(event: dict, kind: str, root: Path | None, key_root: Path) -> dict | None:
     from datetime import UTC, datetime
 
     from context_audit.ingest import PREVIEW_LIMIT, from_hook_event, source_id_for
     from context_audit.scan import scan_fields
 
-    if root:
-        _try(state.bump, root, results_delivered=1)
-    ing = from_hook_event(event)
-    result = scan_fields(ing.fields, state_root=key_root, own_tool=ing.tool)
+    server = event.get("mcp_server")
+    server_name = _str(server.get("name")) if isinstance(server, dict) else None
+    base = {
+        "ts": datetime.now(UTC).isoformat(),
+        "session": _str(event.get("session_id")),
+        "event": kind,
+        "tool_use_id": _str(event.get("tool_use_id")) or "",
+        "transcript": _str(event.get("transcript_path")),
+        "source_id": source_id_for(_str(event.get("tool_name")) or "", server_name),
+    }
+    try:
+        ing = from_hook_event(event)
+        result = scan_fields(ing.fields, state_root=key_root, own_tool=ing.tool)
+    except Exception:
+        if root:
+            _record_gap(root, base, "scanner-error")
+        return None
     outcome, reason = ing.outcome, ing.reason
     if _RANK[result.outcome] > _RANK[outcome]:
         outcome, reason = result.outcome, result.reason
     reason = None if outcome == "complete" else reason
 
     if root:
-        _try(state.bump, root, **{_COUNTER[outcome]: 1})
-        server = event.get("mcp_server")
-        server_name = _str(server.get("name")) if isinstance(server, dict) else None
-        base = {
-            "ts": datetime.now(UTC).isoformat(),
-            "session": _str(event.get("session_id")),
-            "event": kind,
-            "tool_use_id": ing.tool_use_id,
-            "transcript": _str(event.get("transcript_path")),
-            "source_id": source_id_for(ing.tool, server_name),
-        }
+        _try(state.bump, root, results_delivered=1, **{_COUNTER[outcome]: 1})
         empty = dict.fromkeys(("features", "severity", "rule_version", "digest", "locator"))
         if outcome != "complete":
             _try(
@@ -146,7 +189,15 @@ def _handle_result(event: dict, kind: str, root: Path | None, key_root: Path) ->
 
 
 def main() -> None:
-    event = json.loads(sys.stdin.buffer.read())
+    raw = sys.stdin.buffer.read()
+    try:
+        event = json.loads(raw.decode("utf-8"))
+    except (RecursionError, ValueError, UnicodeDecodeError, MemoryError):
+        output = _handle_unreadable(raw)
+        if output is not None:
+            sys.stdout.write(json.dumps(output, ensure_ascii=True))
+            sys.stdout.flush()
+        return
     if not isinstance(event, dict):
         return
     kind = event.get("hook_event_name")
