@@ -18,12 +18,16 @@ ROOT = Path(__file__).resolve().parent.parent
 HOOK_LAUNCHER = ROOT / "bin" / "context-audit-hook"
 CLI_LAUNCHER = ROOT / "bin" / "context-audit"
 SH = "/bin/sh"
+NO_PYTHON = "context-audit: needs Python 3.13 or newer, and none was found on PATH\n"
 
 
-def fake_interpreter(directory: Path, name: str) -> None:
-    """An executable that prints its own name, its arguments, and its stdin."""
+def fake_interpreter(directory: Path, name: str, new: bool = True) -> None:
+    """An executable that prints its own name, its arguments, and its stdin.
+
+    Asked `-I -c` (the CLI launcher's version probe), it answers as 3.13+ when ``new``."""
     path = directory / name
-    path.write_text(f'#!/bin/sh\nprintf "%s\\n" {name} "$@"\n/bin/cat\n')
+    probe = f'if [ "$1" = -I ] && [ "$2" = -c ]; then exit {0 if new else 1}; fi\n'
+    path.write_text(f'#!/bin/sh\n{probe}printf "%s\\n" {name} "$@"\n/bin/cat\n')
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
 
 
@@ -94,7 +98,32 @@ def test_cli_launcher_with_no_python_says_so_and_fails(tmp_path):
     p = launch(CLI_LAUNCHER, tmp_path)
     assert p.returncode == 127
     assert p.stdout == ""
-    assert "no python3" in p.stderr
+    assert p.stderr == NO_PYTHON
+
+
+def test_cli_launcher_refuses_an_old_interpreter(tmp_path):
+    fake_interpreter(tmp_path, "python3", new=False)
+    p = launch(CLI_LAUNCHER, tmp_path)
+    assert (p.returncode, p.stdout, p.stderr) == (127, "", NO_PYTHON)
+
+
+def test_cli_launcher_falls_through_an_old_interpreter_to_a_newer_one(tmp_path):
+    fake_interpreter(tmp_path, "python3.14", new=False)
+    fake_interpreter(tmp_path, "python3")
+    assert launch(CLI_LAUNCHER, tmp_path).stdout.splitlines()[0] == "python3"
+
+
+@needs_old
+def test_cli_launcher_refuses_a_real_old_interpreter(tmp_path):
+    assert OLD_PYTHON
+    link(tmp_path, "python3", OLD_PYTHON)
+    p = launch(CLI_LAUNCHER, tmp_path)
+    assert (p.returncode, p.stdout, p.stderr) == (127, "", NO_PYTHON)
+
+
+def test_hook_launcher_does_not_probe_the_version(tmp_path):
+    fake_interpreter(tmp_path, "python3", new=False)
+    assert launch(HOOK_LAUNCHER, tmp_path).stdout.splitlines()[0] == "python3"
 
 
 def test_hook_launcher_runs_the_real_hook(tmp_path):

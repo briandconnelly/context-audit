@@ -19,12 +19,13 @@ Evidence is under `runs/task11-invocation-2/` and the controls under `runs/task1
 - The next model request held the skill's command with `/Users/bdc/projects/context-audit` in place of the variable, and no request held the literal `${CLAUDE_PLUGIN_ROOT}`.
 - The path is the `--plugin-dir` directory itself, not a cached copy.
 - Baseline: the check is inconclusive unless the skill's command reaches the model at all.
-- Control: the same run without `--plugin-dir` was inconclusive, because the skill never reached the model.
+- The control run without `--plugin-dir` was inconclusive, because the skill never reached the model, so it is not a counter-check of the substitution.
 
 ### `bin/` on the Bash tool's path
 
 - The stub scripted a Bash call that printed `command -v context-audit` and `$PATH`.
 - The plugin's `bin/` directory was appended at the end of `PATH`, and it was the only directory added.
+- The plugin's `bin/` is appended at the end of `PATH`, so an earlier `context-audit` wins.
 - Because it comes last, an installed `context-audit` earlier on `PATH` wins: in these runs `command -v` found the project's virtual environment, which `uv run` had put on the inherited `PATH`.
 - Baseline: the check is inconclusive unless the Bash output reaches the model.
 - Control: without `--plugin-dir`, no directory was added and the outcome was `not_shown`.
@@ -41,8 +42,9 @@ Evidence is under `runs/task11-invocation-2/` and the controls under `runs/task1
 - The brief's first branch applies: the skill names the CLI through `${CLAUDE_PLUGIN_ROOT}`.
 - The skill runs `sh "${CLAUDE_PLUGIN_ROOT}/bin/context-audit" scan --json`, not `python3 -I .../cli.py`, because the system `python3` on macOS is 3.9 and the launcher picks the newest interpreter it finds.
 - The skill does not rely on `bin/` being on `PATH`, because an older installed copy earlier on `PATH` would shadow it.
+- For the same reason the skill hands the owner the full launcher command for `show`, built from the substituted plugin root.
 
 ## Not probed
 
 - Installation from a marketplace, where the plugin root is a cached copy.
-- Whether the substituted path is quoted safely when it contains a double quote.
+- A plugin root containing `$(`, a backtick, or a double quote: substitution is textual, so the model's shell command would evaluate it; the path is owner-controlled, so the risk is low.

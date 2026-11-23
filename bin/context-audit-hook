@@ -1,5 +1,6 @@
 #!/bin/sh
 # Run the context-audit hook under the newest Python 3 on PATH, located from this file's own path.
+# Run it from the plugin's bin/ directory; it is not meant to be symlinked elsewhere.
 case $0 in
 */*) here=${0%/*} ;;
 *) here=. ;;

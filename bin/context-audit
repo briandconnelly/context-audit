@@ -1,13 +1,15 @@
 #!/bin/sh
-# Run the context-audit CLI under the newest Python 3 on PATH, located from this file's own path.
+# Run the context-audit CLI under the newest Python 3.13+ on PATH, located from this file's own path.
+# Run it from the plugin's bin/ directory; it is not meant to be symlinked elsewhere.
 case $0 in
 */*) here=${0%/*} ;;
 *) here=. ;;
 esac
 for py in python3.15 python3.14 python3.13 python3; do
-  if command -v "$py" >/dev/null 2>&1; then
+  if command -v "$py" >/dev/null 2>&1 &&
+    "$py" -I -c 'import sys; sys.exit(0 if sys.version_info >= (3, 13) else 1)' >/dev/null 2>&1; then
     exec "$py" -I "$here/../context_audit/cli.py" "$@"
   fi
 done
-echo "context-audit: no python3 found on PATH; install Python 3.13 or newer" >&2
+echo "context-audit: needs Python 3.13 or newer, and none was found on PATH" >&2
 exit 127

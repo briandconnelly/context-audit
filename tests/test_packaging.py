@@ -16,6 +16,7 @@ SKILL = ROOT / "skills" / "auditing-third-party-context" / "SKILL.md"
 EVENTS = {"PreToolUse", "PostToolUse", "PostToolUseFailure"}
 HOOK_COMMAND = 'sh "${CLAUDE_PLUGIN_ROOT}/bin/context-audit-hook"'
 SCAN_COMMAND = 'sh "${CLAUDE_PLUGIN_ROOT}/bin/context-audit" scan --json'
+SHOW_COMMAND = 'sh "${CLAUDE_PLUGIN_ROOT}/bin/context-audit" show FINDING_ID'
 SHOW = re.compile(r"\bshow\b", re.IGNORECASE)
 
 
@@ -90,7 +91,7 @@ def show_lines(text: str | None = None) -> list[str]:
 def test_skill_never_tells_the_agent_to_run_show():
     # "show" appears once: in the command block handed to the owner for a separate terminal.
     _, body = skill_parts()
-    assert show_lines() == ["context-audit show FINDING_ID"]
+    assert show_lines() == [SHOW_COMMAND]
     i = next(n for n, line in enumerate(body) if SHOW.search(line))
     handing = [line for line in body[:i] if line.strip()][-2]
     assert "give the owner this command to run in a separate terminal" in handing
@@ -113,3 +114,50 @@ def test_skill_markdown_is_one_sentence_per_line():
         stripped = [re.sub(r"^\s*\d+\.\s", "", line) for line in lines]  # list numbers
         joined = [line for line in stripped if re.search(r"[.!?]\s+[A-Z`(]", line)]
         assert joined == [], path
+
+
+# One phrase per required rule, in the order the skill must state them.
+RULES = [
+    "run no other command for this audit",
+    "parses as one JSON object",
+    "If `voided` is not empty",
+    "Present the report's `findings`",
+    "Never read a source file, the event log, or a transcript",
+    "Never run the investigation command below yourself",
+    "give the owner this command to run in a separate terminal",
+    "third-party text",
+]
+OUTCOMES = [
+    "Exit status 0 or 1 with a valid report",
+    "Exit status 3 with a valid report",
+    "Exit status 5",
+    "Exit status 127",
+    "do not search the filesystem",
+    "say the audit did not run",
+]
+
+
+def rule_lines() -> list[str]:
+    return prose(skill_parts()[1])
+
+
+def test_each_required_rule_is_stated_once_in_order():
+    lines = rule_lines()
+    where = []
+    for phrase in RULES:
+        hits = [n for n, line in enumerate(lines) if phrase in line]
+        assert len(hits) == 1, phrase
+        where.append(hits[0])
+    assert where == sorted(where)
+
+
+def test_voided_comes_before_the_findings_are_presented():
+    lines = rule_lines()
+    voided = next(n for n, line in enumerate(lines) if "`voided`" in line)
+    present = next(n for n, line in enumerate(lines) if "Present the report" in line)
+    assert voided < present
+
+
+def test_each_exit_outcome_is_stated_once():
+    for phrase in OUTCOMES:
+        assert sum(phrase in line for line in rule_lines()) == 1, phrase
