@@ -16,7 +16,7 @@ Evidence is under `runs/task11-invocation-2/` and the controls under `runs/task1
 ### Skill body substitution
 
 - The stub scripted a `Skill` call for `context-audit:auditing-third-party-context`.
-- The next model request held the skill's command with `/Users/bdc/projects/context-audit` in place of the variable, and no request held the literal `${CLAUDE_PLUGIN_ROOT}`.
+- The next model request held the skill's command with `<path to this repository>` (the `--plugin-dir` path) in place of the variable, and no request held the literal `${CLAUDE_PLUGIN_ROOT}`.
 - The path is the `--plugin-dir` directory itself, not a cached copy.
 - Baseline: the check is inconclusive unless the skill's command reaches the model at all.
 - The control run without `--plugin-dir` was inconclusive, because the skill never reached the model, so it is not a counter-check of the substitution.

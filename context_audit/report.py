@@ -18,11 +18,10 @@ from context_audit.rules import Finding
 from context_audit.selftest import SelfTest
 from context_audit.state import COUNTER_NAMES
 
-NAME_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@-]{0,63}$")
+NAME_OK = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.@-]{0,63}")  # used with fullmatch
 FINDING_ID = re.compile(r"^f-[0-9a-f]{12}$")
 SOURCE_ID = re.compile(r"^src-[0-9a-f]{8}$")
 SEVERITIES = ("high", "review")
-SOURCE_KINDS = ("skill", "command", "agent", "hook_prompt", "plugin_file", "mcp_server")
 TOOL_RESULT_KIND = "tool_result"
 TOOL_SURFACES = {"PostToolUse": "tool_result", "PostToolUseFailure": "tool_error"}
 READ_KINDS = frozenset({"skill", "command", "agent", "hook_prompt"})
@@ -39,7 +38,6 @@ CAPABILITY_BEHAVIOURS = (
     "transcript-readback",
     "notification",
 )
-CAPABILITY_STATUSES = ("shown", "not_shown", "inconclusive", "unverified")
 FRONTENDS = ("terminal", "headless")  # "none" in an entry means unverified
 PERMISSION_MODES = ("default", "pre-allowed")
 
@@ -81,7 +79,7 @@ FIXED_MESSAGES = frozenset(
 
 
 def safe_name(name: str, source_id: str) -> str:
-    return name if NAME_OK.match(name) else source_id
+    return name if NAME_OK.fullmatch(name) else source_id
 
 
 _ESCAPED = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})

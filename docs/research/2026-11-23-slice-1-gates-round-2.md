@@ -94,6 +94,7 @@ Third-party text that flatly asserts the user approved "this" is review under ei
 - Budget: judging was quadratic in sentence length, so one 150 KB sentence took 6.3 s.
   It is now linear and the scan stops at the deadline: the worst measured input returns in about 0.17 s, marked partial.
   100 KB of plain prose takes 0.09 to 0.12 s against a 0.12 s budget, so there is almost no margin.
+  Since the final fix wave a cut no longer discards findings already made (judging has its own allowance), and the static `scan` allows 2 s per source.
 - The round-1 held-out set is spent and is now the development set under `evaluation/dev/`.
 
 ## How the held-out sets were used
@@ -103,6 +104,9 @@ Third-party text that flatly asserts the user approved "this" is review under ei
 - hct-108 was fixed once knowing only its family and surface (100/100 at `1f2c67c`); review showed that fix was an evasion route, and narrowing it brought the failure back.
 - The held-out control count was then read after each of four further fix rounds, and once prompted the reversal of a ruling.
   The count is therefore a lightly used validation signal, not a single blind reading; the recall figure did not move across those rounds.
+- During Task 18 the held-out recall count was also read: after each of two fix rounds, and three more times in a bisect, and one code change was reverted because of that count.
+  No held-out item's text or ID was looked up.
+  53/60 is therefore a figure that was defended by selection, not a single blind reading.
 
 ## Known limits
 

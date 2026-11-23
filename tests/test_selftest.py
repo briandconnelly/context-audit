@@ -83,3 +83,11 @@ def test_selftest_is_fast(tmp_path):
     t = time.perf_counter()
     run_selftest(tmp_path)
     assert time.perf_counter() - t < 0.15
+
+
+def test_an_empty_corpus_fails_the_selftest(tmp_path, monkeypatch):
+    # Minor 12: with no canaries for an entry point, the self-test cannot pass.
+    from context_audit import selftest
+
+    monkeypatch.setattr(selftest, "_load", lambda name: [])
+    assert not any(r.passed for r in selftest.run_selftest(tmp_path))

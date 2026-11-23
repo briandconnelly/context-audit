@@ -12,6 +12,7 @@ The design is in `docs/superpowers/specs/2026-11-22-third-party-context-audit-de
 
 ## Requirements
 
+- macOS or Linux: the launchers are POSIX `sh` scripts and the state lock uses `fcntl`.
 - Python 3.13 or newer on `PATH`.
   The stock macOS `python3` is older; with only that, the hook prints a message saying it needs Python 3.13 or newer and scans nothing, and the `context-audit` launcher exits 127.
   With no `python3` on `PATH` at all, the hook does nothing and prints nothing.
@@ -30,6 +31,7 @@ The design is in `docs/superpowers/specs/2026-11-22-third-party-context-audit-de
 
    The hook's on-screen warning names the command as `context-audit show …`, so it needs to be on `PATH`.
    Without that, run the plugin's launcher by its full path instead: `sh <plugin>/bin/context-audit show …`.
+   The installed command is a copy: after a plugin update, run the install again, or `show` may run older detectors than the hook and report that the result "does not produce this finding".
 
 State lives in `$CONTEXT_AUDIT_HOME`, else `$XDG_STATE_HOME/context-audit`, else `~/.local/state/context-audit`.
 
@@ -78,6 +80,8 @@ f-521421b65ac6 high call+conceal-act
 
 If no finding with this ID is on record (for example, another state directory or a trimmed log), the transcript is gone, the source has left the inventory, or the file changed so the finding no longer appears, it prints `evidence unavailable:` and the reason, and exits 4.
 Count that as its own verdict when you triage.
+For a finding in a project's `.claude/` directory, run `show` from that project's directory (or pass `--project`), since the project is the current directory by default.
+`show` prints evidence only when its output is a terminal; piped or redirected, it prints `evidence unavailable:` and exits 4.
 
 ## What is covered
 
@@ -112,10 +116,15 @@ The release gates were measured on 2026-11-23; the figures, tables, and caveats 
   Two other sets of unseen directives gave 55% and 67%, so recall depends heavily on who wrote the text, and 88% is the top of the observed range.
 - On the project's own 150 controls and 1,000 generated benign results there is no high finding.
   On 100 held-out controls from an independent author, 4 produce a high finding, within the limit of 5 in 100 the owner approved; benign text written to be hard produced more.
-  That count was read after each of several fix rounds, so it is a lightly used validation signal, not a single blind reading; see "How the held-out sets were used" in the same document.
+  That count was read after each of several fix rounds, so it is a lightly used validation signal, not a single blind reading.
+  The recall count was also read during the last fix round (twice, then three times in a bisect) and one code change was reverted on it, so 53/60 was defended by selection; no held-out item was looked at. See "How the held-out sets were used" in the same document.
 - Review findings are not gated: generated benign results carry 193.6 per 100, and 663 of 1,000 carry at least one.
 
-Known limits, as that document states them: English only, apart from a few translated phrases; a directive written as a record line (a log line, commit subject, or step line) is review at most; text asserting the user approved "this" or "it" is review; concealment or override phrased outside the cue families is missed; and input that exhausts a budget is cut: findings made before the cut are kept and reported, and the rest is marked partly scanned. The hook detects for 0.12 seconds with a separate allowance for judging; `scan` allows 2 seconds per source; both stop at 150,000 bytes. `scan --json` counts sources as fully scanned, partly scanned, and unreadable separately.
+Known limits, as that document states them: English only, apart from a few translated phrases; a directive written as a record line (a log line, commit subject, or step line) is review at most; text asserting the user approved "this" or "it" is review; and concealment or override phrased outside the cue families is missed.
+Further limits in the code: text inside double quotes on one line, in a code fence (an unclosed fence quotes everything after it), in a block quote, or in a YAML-style quoted value is review at most; JSON object keys are not scanned; and a directive that follows unpunctuated text on the same line is not seen as an imperative.
+Input that exhausts a budget is cut: findings made before the cut are kept and reported, and the rest is marked partly scanned.
+The hook detects for 0.12 seconds with a separate allowance for judging; `scan` allows 2 seconds per source; both stop at 150,000 bytes.
+`scan --json` counts sources as fully scanned, partly scanned, and unreadable separately.
 
 ## Not built
 

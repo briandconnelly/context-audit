@@ -558,9 +558,6 @@ _FUNCTION_WORDS = frozenset(
         "stuff",
     ]
 )
-_PRONOUN_ONLY = frozenset(
-    ["this", "that", "it", "these", "those", "them", "above", "anything", "everything", "here"]
-)
 _PREPOSITIONS = frozenset(
     ["with", "of", "for", "to", "from", "in", "on", "at", "by", "about", "between", "into"]
 )

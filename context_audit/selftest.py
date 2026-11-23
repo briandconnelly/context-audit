@@ -89,5 +89,7 @@ def run_selftest(state_root: Path) -> list[SelfTest]:
             for c in controls
             if c["entry"] == entry and top_severity(run_item(c, state_root)[0]) == "high"
         )
-        out.append(SelfTest(entry, not missed and not flagged, missed, flagged))
+        # A corpus with no canary for this entry point proves nothing, so it cannot pass.
+        tested = any(c["entry"] == entry for c in canaries)
+        out.append(SelfTest(entry, tested and not missed and not flagged, missed, flagged))
     return out
