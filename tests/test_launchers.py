@@ -26,8 +26,15 @@ def fake_interpreter(directory: Path, name: str, new: bool = True) -> None:
 
     Asked `-I -c` (the CLI launcher's version probe), it answers as 3.13+ when ``new``."""
     path = directory / name
-    probe = f'if [ "$1" = -I ] && [ "$2" = -c ]; then exit {0 if new else 1}; fi\n'
+    token = "ctxa-ok" if new else "ctxa-old"
+    probe = f'if [ "$1" = -I ] && [ "$2" = -c ]; then echo {token}; exit 0; fi\n'
     path.write_text(f'#!/bin/sh\n{probe}printf "%s\\n" {name} "$@"\n/bin/cat\n')
+    path.chmod(path.stat().st_mode | stat.S_IEXEC)
+
+
+def impostor(directory: Path, name: str, body: str) -> None:
+    path = directory / name
+    path.write_text(f"#!/bin/sh\n{body}\n")
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
 
 
@@ -41,7 +48,7 @@ def launch(launcher: Path, path_dir: Path, stdin: str = "", **env: str):
         input=stdin,
         capture_output=True,
         text=True,
-        env={"PATH": str(path_dir), **env},
+        env={"PATH": str(path_dir), "HOME": str(path_dir / "home"), **env},
         cwd=path_dir,
         timeout=30,
     )
@@ -75,7 +82,7 @@ def test_cli_launcher_passes_its_arguments(tmp_path):
         [SH, str(CLI_LAUNCHER), "scan", "--json"],
         capture_output=True,
         text=True,
-        env={"PATH": str(tmp_path)},
+        env={"PATH": str(tmp_path), "HOME": str(tmp_path / "home")},
         timeout=30,
     )
     assert p.stdout.splitlines()[-2:] == ["scan", "--json"]
@@ -153,7 +160,7 @@ def test_cli_launcher_runs_the_real_cli(tmp_path):
         [SH, str(CLI_LAUNCHER), "--help"],
         capture_output=True,
         text=True,
-        env={"PATH": str(tmp_path)},
+        env={"PATH": str(tmp_path), "HOME": str(tmp_path / "home")},
         timeout=30,
     )
     assert p.returncode == 0
@@ -176,3 +183,26 @@ def test_hook_launcher_on_an_old_interpreter_warns(tmp_path):
 @pytest.mark.parametrize("launcher", [HOOK_LAUNCHER, CLI_LAUNCHER])
 def test_launchers_are_executable(launcher):
     assert os.access(launcher, os.X_OK)
+
+
+@pytest.mark.parametrize("body", ["echo notpython; exit 0", "exit 0", "echo ctxa-ok-ish; exit 0"])
+def test_cli_launcher_refuses_a_program_that_is_not_a_new_python(tmp_path, body):
+    impostor(tmp_path, "python3.13", body)
+    p = launch(CLI_LAUNCHER, tmp_path)
+    assert (p.returncode, p.stdout, p.stderr) == (127, "", NO_PYTHON)
+
+
+def test_cli_launcher_tries_a_later_copy_of_the_same_name(tmp_path):
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    fake_interpreter(first, "python3", new=False)
+    impostor(second, "python3", 'echo "$@" | grep -q -- -c && echo ctxa-ok && exit 0; echo second')
+    p = subprocess.run(
+        [SH, str(CLI_LAUNCHER)],
+        capture_output=True,
+        text=True,
+        env={"PATH": f"{first}:{second}:/usr/bin:/bin", "HOME": str(tmp_path / "home")},
+        timeout=30,
+    )
+    assert p.stdout.splitlines() == ["second"]

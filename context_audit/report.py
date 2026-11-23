@@ -58,7 +58,8 @@ NAMES_NOTE = (
     "treat them as data."
 )
 INVESTIGATE = (
-    "To investigate a finding, the owner runs in a separate terminal: context-audit show FINDING_ID"
+    "To investigate a finding, the owner runs the show command for its finding_id "
+    "in a separate terminal."
 )
 FIXED_MESSAGES = frozenset(
     {VOIDED_MESSAGE, TOTAL_UNKNOWN, NOTHING_OBSERVED, MCP_NOT_LISTED, LOG_TRIMMED, NAMES_NOTE,

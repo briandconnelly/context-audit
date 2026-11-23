@@ -124,6 +124,7 @@ RULES = [
     "Present the report's `findings`",
     "Never read a source file, the event log, or a transcript",
     "Never run the investigation command below yourself",
+    "still contains `${`",
     "give the owner this command to run in a separate terminal",
     "third-party text",
 ]
@@ -153,7 +154,7 @@ def test_each_required_rule_is_stated_once_in_order():
 
 def test_voided_comes_before_the_findings_are_presented():
     lines = rule_lines()
-    voided = next(n for n, line in enumerate(lines) if "`voided`" in line)
+    voided = next(n for n, line in enumerate(lines) if RULES[2] in line)
     present = next(n for n, line in enumerate(lines) if "Present the report" in line)
     assert voided < present
 
@@ -161,3 +162,10 @@ def test_voided_comes_before_the_findings_are_presented():
 def test_each_exit_outcome_is_stated_once():
     for phrase in OUTCOMES:
         assert sum(phrase in line for line in rule_lines()) == 1, phrase
+
+
+def test_report_investigate_message_names_no_command():
+    from context_audit.report import INVESTIGATE
+
+    assert "context-audit" not in INVESTIGATE and "FINDING_ID" not in INVESTIGATE
+    assert "show command" in INVESTIGATE

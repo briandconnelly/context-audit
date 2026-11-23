@@ -25,7 +25,6 @@ Evidence is under `runs/task11-invocation-2/` and the controls under `runs/task1
 
 - The stub scripted a Bash call that printed `command -v context-audit` and `$PATH`.
 - The plugin's `bin/` directory was appended at the end of `PATH`, and it was the only directory added.
-- The plugin's `bin/` is appended at the end of `PATH`, so an earlier `context-audit` wins.
 - Because it comes last, an installed `context-audit` earlier on `PATH` wins: in these runs `command -v` found the project's virtual environment, which `uv run` had put on the inherited `PATH`.
 - Baseline: the check is inconclusive unless the Bash output reaches the model.
 - Control: without `--plugin-dir`, no directory was added and the outcome was `not_shown`.
