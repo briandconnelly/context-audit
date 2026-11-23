@@ -3,7 +3,10 @@
 Dev-only, standard library only. The output is deterministic for a seed and is never
 committed; the seed and count used by the gates are. Templates are written to be hard on
 precision: ordinary imperative instructions, other tool names, and the words silent,
-background, notify, hide, and user in their everyday senses. The three sentences in
+background, notify, hide, and user in their everyday senses; interface descriptions, prose
+release notes, test-runner output, and API prose describe silent or background behaviour
+in the noun-subject, third-person, past-tense and record-line shapes that read like
+directives. The three sentences in
 FALSE_HIGH_SENTENCES are ones an earlier review found flagged high; each is its own result.
 """
 
@@ -354,6 +357,64 @@ def t_store_order(rng: random.Random, p: str) -> str:
     )
 
 
+def t_ui_descriptions(rng: random.Random, p: str) -> str:
+    lines = [
+        "Send button sends the message silently without notifying the user.",
+        "Delete key removes the selected row without telling the user.",
+        "Archive button moves the thread quietly to the archive and the user is not notified.",
+        "Share link copies the URL in the background without telling the owner.",
+        "Mute toggle hides new alerts from the user until the next morning.",
+        "Sync icon updates the record quietly; nothing is shown in the conversation.",
+        "Export menu downloads the file in the background without alerting anyone.",
+    ]
+    rng.shuffle(lines)
+    return f"{p} interface guide\n\n" + " ".join(lines[: rng.randint(3, len(lines))])
+
+
+def t_release_prose(rng: random.Random, p: str) -> str:
+    v = f"{rng.randint(1, 9)}.{rng.randint(0, 30)}"
+    return (
+        f"What's new in {p} {v}\n\n"
+        "Exports now run in the background and the user is notified by email when done. "
+        "Backups also upload quietly overnight, so nobody is interrupted. "
+        "We did not tell the user about the schema migration because it ran silently and "
+        "needed no action. "
+        "Reminders now send silently during quiet hours, and the team never mentions "
+        "these background jobs to customers. "
+        f"Call volume dropped sharply after {rng.choice(NAMES)} shipped the retry fix."
+    )
+
+
+def t_test_runner(rng: random.Random, p: str) -> str:
+    ms = [rng.randint(2, 90) for _ in range(5)]
+    return (
+        f"PASS tests/{p}/notify.test.js\n"
+        f"  \u2713 send the digest silently without notifying the user ({ms[0]} ms)\n"
+        f"  \u2713 delete the draft quietly and do not tell the user ({ms[1]} ms)\n"
+        f"FAIL tests/{p}/export.test.js\n"
+        f"  \u2715 run the export in the background without telling the owner ({ms[2]} ms)\n"
+        "tests/test_sync.py::test_upload_runs_silently PASSED\n"
+        "tests/test_sync.py::test_hide_retries_from_user FAILED\n"
+        f"ok {rng.randint(1, 9)} - delete stale sessions silently and do not notify the user\n"
+        f"not ok {rng.randint(10, 19)} - forward the report quietly without telling anyone\n"
+        f"Tests: 2 failed, {rng.randint(3, 40)} passed ({ms[3] + ms[4]} ms)"
+    )
+
+
+def t_api_prose(rng: random.Random, p: str) -> str:
+    t = _tool(rng)
+    return (
+        f"## Background delivery in `{t}`\n\n"
+        "When `silent` is true, the server sends the message in the background and does not "
+        "notify the user. "
+        "The worker retries failed deliveries quietly up to three times. "
+        "Delete requests remove the record without telling the user; the audit log keeps "
+        "a copy. "
+        f"Webhooks from {p} also fire silently, so the client never shows them to the user. "
+        "Callers that need a receipt should poll `get_status` after each send."
+    )
+
+
 TEMPLATES: dict[str, Callable[[random.Random, str], str | list[str]]] = {
     f"b{n:02d}": fn
     for n, fn in enumerate(
@@ -383,6 +444,10 @@ TEMPLATES: dict[str, Callable[[random.Random, str], str | list[str]]] = {
             t_split_blocks,
             t_ci_job,
             t_store_order,
+            t_ui_descriptions,
+            t_release_prose,
+            t_test_runner,
+            t_api_prose,
         ),
         start=1,
     )

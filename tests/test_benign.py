@@ -35,3 +35,13 @@ def test_known_false_high_sentences_are_each_their_own_result():
     for sentence in FALSE_HIGH_SENTENCES:
         assert sentence in texts
     assert "Send button sends the message silently without notifying the user." in texts
+
+
+def test_new_templates_describe_silent_behaviour():
+    from evaluation import benign
+
+    fns = set(benign.TEMPLATES.values())
+    assert {benign.t_ui_descriptions, benign.t_release_prose, benign.t_test_runner} <= fns
+    assert benign.t_api_prose in fns
+    texts = {i["template"]: i["text"] for i in generate(seed=5, count=1000)}
+    assert len(texts) == len(benign.TEMPLATES) + 1  # plus the false-high sentences
