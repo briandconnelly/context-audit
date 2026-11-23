@@ -37,7 +37,9 @@ from context_audit.report import (  # noqa: E402
     TOTAL_UNKNOWN,
     VERSION_UNKNOWN,
     escape,
+    log_finding,
     model_report,
+    split_records,
 )
 from context_audit.rules import Finding  # noqa: E402
 from context_audit.scan import STATIC_BUDGET, ScanResult, scan_fields  # noqa: E402
@@ -151,13 +153,14 @@ def cmd_scan(args: argparse.Namespace) -> int:
             outcomes[s.source_id] = result.outcome
             results_by_source[s.source_id] = result
             found.extend((f, s) for f in result.findings)
-    on_record = {e.get("finding_id") for e in state.read_events(root) if e.get("event") == "scan"}
+    events, _ = split_records(state.read_events(root))
+    on_record = {e.get("finding_id") for e in events if e.get("event") == "scan"}
     for f, s in found:
         if f.finding_id in on_record:
             continue
         on_record.add(f.finding_id)
         state.append_event(root, _scan_record(f, s, results_by_source[s.source_id]))
-    events = state.read_events(root)
+    events, malformed = split_records(state.read_events(root))
     log = [e for e in events if e.get("event") in TOOL_SURFACES]
     rep = model_report(
         selftest=results,
@@ -167,6 +170,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         log_records=log,
         trimmed=(root / "trimmed").exists(),
         outcomes=outcomes,
+        malformed=malformed,
         **_capability(root),
     )
     if args.json:
@@ -180,7 +184,8 @@ def cmd_scan(args: argparse.Namespace) -> int:
                 print(m)
     if rep["voided"]:
         return EXIT_SELFTEST
-    return EXIT_HIGH if any(f.severity == "high" for f, _ in found) else EXIT_OK
+    # R8: every high finding in the report counts, logged tool-result ones included.
+    return EXIT_HIGH if any(i["severity"] == "high" for i in rep["findings"]) else EXIT_OK
 
 
 def _scan_record(f: Finding, s: Source, result: ScanResult) -> dict:
@@ -231,7 +236,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     root = _open_state()
     results = run_selftest(root)
     sources = enumerate_sources(_roots(args))
-    events = state.read_events(root)
+    events, malformed = split_records(state.read_events(root))
     trimmed = root / "trimmed"
     rep = model_report(
         selftest=results,
@@ -240,6 +245,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         findings=[],
         log_records=[],
         trimmed=trimmed.exists(),
+        malformed=malformed,
         **_capability(root),
     )
     print(f"State directory: {escape(str(root))}")
@@ -252,6 +258,14 @@ def cmd_status(args: argparse.Namespace) -> int:
     print("Gap records by reason:" if gaps else "Gap records: none")
     for reason, n in sorted(gaps.items()):
         print(f"  {escape(reason)}: {n}")
+    highs = sorted(
+        {i["finding_id"] for e in events if (i := log_finding(e)) and i["severity"] == "high"}
+    )
+    print(f"Logged high findings: {len(highs)}")
+    for fid in highs:
+        print(f"  {fid}")
+    if malformed:
+        print(f"Malformed event log records skipped: {malformed}")
     if trimmed.exists():
         try:
             when = trimmed.read_text(errors="replace").strip()
@@ -389,7 +403,7 @@ def cmd_show(args: argparse.Namespace) -> int:
         print(NOT_A_TERMINAL)
         return EXIT_UNAVAILABLE
     root = _open_state()
-    records = [e for e in state.read_events(root) if e.get("finding_id") == fid]
+    records = [e for e in split_records(state.read_events(root))[0] if e.get("finding_id") == fid]
     try:
         if not records:
             raise _Unavailable("no finding with this ID is on record")

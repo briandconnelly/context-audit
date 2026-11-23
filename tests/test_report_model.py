@@ -96,7 +96,8 @@ def test_model_report_keys_are_closed(tmp_path):
     assert report.CAPABILITY_SCOPE in rep["messages"]
     assert set(rep["observation"]) == {
         "calls_requested", "results_delivered", "fully_scanned", "partly_scanned",
-        "not_scanned", "unmatched_requests", "total_results",
+        "not_scanned", "unmatched_requests", "malformed_log_records",  # F9 (final fix wave)
+        "total_results",
     }  # fmt: skip
     assert rep["observation"]["total_results"] == "unknown"
     # R2 (final fix wave): partly scanned and unreadable sources are counted apart;

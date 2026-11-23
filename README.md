@@ -39,8 +39,8 @@ State lives in `$CONTEXT_AUDIT_HOME`, else `$XDG_STATE_HOME/context-audit`, else
 | --- | --- | --- |
 | `context-audit inventory` | Lists third-party sources on disk, one per line: kind, name, how it was found, and why it was skipped if it was. | 0 |
 | `context-audit selftest` | Runs the canaries and controls through each entry point (`hook`, `scan`). | 0 passed, 3 failed |
-| `context-audit scan` | Runs the self-test, then scans the inventory, and prints the self-test, capability, observation, findings, and fixed messages. `--json` prints only the closed report that the audit skill reads. | 3 the self-test failed, even with a high finding; else 1 a high finding; else 0 |
-| `context-audit status` | Prints the state directory, the self-test, capability, observation counts, and gap records by reason. | 0 |
+| `context-audit scan` | Runs the self-test, then scans the inventory, and prints the self-test, capability, observation, findings, and fixed messages. `--json` prints only the closed report that the audit skill reads. | 3 the self-test failed, even with a high finding; else 1 a high finding in the report, on disk or logged from a tool result; else 0 |
+| `context-audit status` | Prints the state directory, the self-test, capability, observation counts, gap records by reason, and the count and IDs of logged high findings. | 0 |
 | `context-audit show FINDING_ID` | Prints the evidence for a finding, with control characters escaped, only when its output is a terminal. | 0 shown, 2 not a finding ID, 4 evidence unavailable or output not a terminal |
 
 `inventory`, `scan`, `status`, and `show` take `--claude-dir`, `--claude-json`, and `--project` to point at another installation; the default is your own, with the current directory as the project.

@@ -113,10 +113,38 @@ def unverified_capability() -> list[dict]:
     return [unverified_entry(b) for b in CAPABILITY_BEHAVIOURS]
 
 
-def observation(counters: Mapping[str, int]) -> dict:
+def observation(counters: Mapping[str, int], malformed: int = 0) -> dict:
     counts = {n: int(counters.get(n, 0)) for n in COUNTER_NAMES}
     unmatched = max(0, counts["calls_requested"] - counts["results_delivered"])
-    return {**counts, "unmatched_requests": unmatched, "total_results": "unknown"}
+    return {**counts, "unmatched_requests": unmatched, "malformed_log_records": malformed,
+            "total_results": "unknown"}  # fmt: skip
+
+
+_RECORD_STR_KEYS = ("event", "ts", "session", "tool_use_id", "transcript", "source_id",
+                    "finding_id", "severity", "digest", "locator", "outcome", "reason")  # fmt: skip
+
+
+def well_formed(record: object) -> bool:
+    """Whether an event-log record has the value types the readers expect: strings or
+    null, a list of strings for `features`, an integer or null for `rule_version`. The log
+    is writable by any session running as the owner, so a record may be anything."""
+    if not isinstance(record, dict) or not isinstance(record.get("event"), str):
+        return False
+    if any(not isinstance(record.get(k), (str, type(None))) for k in _RECORD_STR_KEYS):
+        return False
+    features = record.get("features")
+    if features is not None and not (
+        isinstance(features, list) and all(isinstance(x, str) for x in features)
+    ):
+        return False
+    version = record.get("rule_version")
+    return version is None or (isinstance(version, int) and not isinstance(version, bool))
+
+
+def split_records(records: list[dict]) -> tuple[list[dict], int]:
+    """The well-formed records, and how many were not."""
+    good = [r for r in records if well_formed(r)]
+    return good, len(records) - len(good)
 
 
 SCAN_OUTCOMES = {"complete": "scanned", "partial": "partly_scanned", "unreadable": "unreadable"}
@@ -175,6 +203,7 @@ def model_report(
     capability: list[dict] | None = None,
     claude_version_known: bool = True,
     outcomes: Mapping[str, str] | None = None,
+    malformed: int = 0,
 ) -> dict:
     voided = [t.entry for t in selftest if not t.passed]
     items: list[dict] = []
@@ -199,7 +228,7 @@ def model_report(
             seen.add(item["finding_id"])
             items.append(item)
     items.sort(key=lambda i: (SEVERITIES.index(i["severity"]), i["finding_id"]))
-    obs = observation(counters)
+    obs = observation(counters, malformed)
     counts = source_counts(sources, outcomes)
     messages = []
     if voided:

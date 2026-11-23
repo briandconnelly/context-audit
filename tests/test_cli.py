@@ -358,3 +358,51 @@ def test_show_on_a_terminal_survives_a_lone_surrogate(env):
     code, out = _pty_run([sys.executable, "-I", str(CLI), "show", fid, *env["args"]], e)
     assert code == 0, out
     assert "\\ud800" in out and "submit_feedback" in out and "Traceback" not in out
+
+
+# --- F9: malformed event records are skipped and counted, never fatal ---
+
+GOOD_LOG = {"event": "PostToolUse", "finding_id": "f-0123456789ab", "source_id": "src-0123abcd",
+            "features": ["act", "conceal-act"], "severity": "high", "tool_use_id": "toolu_x",
+            "transcript": "/nonexistent", "outcome": "complete", "reason": None}  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {**GOOD_LOG, "features": [{"x": 1}]},
+        {**GOOD_LOG, "event": ["PostToolUse"]},
+        {**GOOD_LOG, "finding_id": ["f-0123456789ab"]},
+        {**GOOD_LOG, "reason": {"r": 1}, "finding_id": None},
+    ],
+)
+def test_malformed_event_records_are_skipped_and_counted(env, capsys, bad):
+    env["home"].mkdir()
+    state.append_event(env["home"], bad)
+    assert run(env, "scan", "--json") == 0
+    rep = json.loads(capsys.readouterr().out)
+    assert rep["observation"]["malformed_log_records"] == 1
+    assert run(env, "status") == 0
+    assert "Malformed event log records skipped: 1" in capsys.readouterr().out
+
+
+# --- R8: scan's exit code and status reflect logged high findings ---
+
+
+def test_scan_exit_code_counts_a_logged_high_finding(env, capsys):
+    env["home"].mkdir()
+    state.append_event(env["home"], GOOD_LOG)
+    assert run(env, "scan", "--json") == 1
+    rep = json.loads(capsys.readouterr().out)
+    assert [f["finding_id"] for f in rep["findings"]] == ["f-0123456789ab"]
+
+
+def test_status_shows_logged_high_findings(env, capsys):
+    env["home"].mkdir()
+    state.append_event(env["home"], GOOD_LOG)
+    state.append_event(env["home"], {**GOOD_LOG, "finding_id": "f-0123456789ac",
+                                     "severity": "review"})  # fmt: skip
+    assert run(env, "status") == 0
+    out = capsys.readouterr().out
+    assert "Logged high findings: 1" in out and "f-0123456789ab" in out
+    assert "f-0123456789ac" not in out
