@@ -58,47 +58,75 @@ class _Collector:
 
     def text(self, locator: str, text: str, block: int, json_prefix: str) -> None:
         """One text: expanded into its string leaves when it is a JSON object or array,
-        each located by `json_prefix` followed by its JSON path."""
+        each located by `json_prefix` followed by its JSON path. Text the parser cannot
+        nest into is kept as one plain field, so a deep sibling cannot hide it."""
         self.chars += len(text)
         parsed = self._parse(text)
         if parsed is _UNPARSEABLE:
             self.reason = self.reason or "depth"
+            self.add(self.source_id, locator, text, block)
         elif isinstance(parsed, (dict, list)):
             self._walk(parsed, json_prefix, block)
         else:
             self.add(self.source_id, locator, text, block)
 
     def _parse(self, text: str) -> object:
-        stripped = text.lstrip()
+        stripped = text.lstrip("\ufeff \t\r\n")
         if not stripped.startswith(("{", "[")) or len(text) > self.budget.max_bytes * 4:
             return None
         try:
-            return json.loads(text)
+            return json.loads(stripped)
         except RecursionError:
             return _UNPARSEABLE
         except ValueError:
             return None
 
+    def _new_source(self) -> str:
+        self.leaves += 1
+        return f"{self.source_id}.j{self.leaves}"
+
     def _walk(self, root: object, prefix: str, block: int) -> None:
         # Iterative, depth-first in document order; depth counts enclosing containers.
-        stack: list[tuple[object, str, int]] = [(root, "$", 1)]
+        # A string leaf carries its (source_id, block): values of different object keys
+        # are separate sources; consecutive strings of one array share a source with
+        # consecutive blocks, so they join like sibling text blocks.
+        Item = tuple[object, str, int, tuple[str, int] | None]
+        stack: list[Item] = [(root, "$", 1, None)]
+        node_cap = self.budget.max_fields * 10
+        visited = 0
         while stack:
-            node, path, depth = stack.pop()
+            node, path, depth, where = stack.pop()
+            visited += 1
+            if visited > node_cap:
+                self.reason = self.reason or "field-budget"
+                return
             if isinstance(node, str):
                 if self.full():
                     return
-                # Each leaf is its own statement: its own source_id, so leaves never join.
-                self.leaves += 1
-                self.add(f"{self.source_id}.j{self.leaves}", prefix + path, node, block)
+                sid, blk = where or (self._new_source(), block)
+                self.add(sid, prefix + path, node, blk)
             elif isinstance(node, (dict, list)):
                 if depth > self.budget.max_depth:
                     self.reason = self.reason or "depth"
                     continue
+                items: list[Item] = []
                 if isinstance(node, dict):
-                    items = [(f"{path}.{k}", v) for k, v in node.items()]
+                    items = [(v, f"{path}.{k}", depth + 1, None) for k, v in node.items()]
                 else:
-                    items = [(f"{path}[{i}]", v) for i, v in enumerate(node)]
-                stack.extend((v, p, depth + 1) for p, v in reversed(items))
+                    run: str | None = None
+                    run_block = 0
+                    for i, v in enumerate(node):
+                        here = None
+                        if isinstance(v, str):
+                            if run is None:
+                                run, run_block = self._new_source(), 0
+                            else:
+                                run_block += 1
+                            here = (run, run_block)
+                        else:
+                            run = None
+                        items.append((v, f"{path}[{i}]", depth + 1, here))
+                stack.extend(reversed(items))
 
 
 _UNPARSEABLE = object()
@@ -134,9 +162,13 @@ def from_hook_event(event: dict, budget: Budget = _DEFAULT_BUDGET) -> Ingested:
             c.text("text", response, 0, "")
         elif isinstance(response, list):
             for i, block in enumerate(response):
-                text = block.get("text") if isinstance(block, dict) else None
+                if not isinstance(block, dict):
+                    continue
+                text, locator = block.get("text"), f"content[{i}].text"
+                resource = block.get("resource")
+                if not isinstance(text, str) and isinstance(resource, dict):
+                    text, locator = resource.get("text"), f"content[{i}].resource.text"
                 if isinstance(text, str):
-                    locator = f"content[{i}].text"
                     c.text(locator, text, i, locator)
         else:
             return undecodable()
