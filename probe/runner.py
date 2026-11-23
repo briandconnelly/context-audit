@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shlex
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -116,12 +117,27 @@ def session_id(ev: Evidence) -> str | None:
     return None
 
 
+def isolated_workdir() -> Path:
+    """A fresh working directory with no CLAUDE.md or .claude in any ancestor.
+
+    Claude Code reads instructions and skills from every ancestor of its working directory, so a
+    directory under the owner's home would put their real configuration into the run.
+    """
+    work = Path(tempfile.mkdtemp(prefix="ctxa-probe-")).resolve()
+    for ancestor in [work, *work.parents]:
+        if (ancestor / "CLAUDE.md").exists() or (ancestor / ".claude").exists():
+            raise RuntimeError(f"working directory is not isolated: {ancestor} has Claude files")
+    if work.is_relative_to(Path.home().resolve()):
+        raise RuntimeError(f"working directory is under the home directory: {work}")
+    return work
+
+
 def run_scenario(s: Scenario, run_dir: Path, *, timeout: float = 120) -> Result:
     run_dir = run_dir.resolve()
     fresh_dir(run_dir)
     sandbox = Sandbox(run_dir / "profile")
-    work = run_dir / "work"
-    work.mkdir()
+    work = isolated_workdir()
+    (run_dir / "workdir.txt").write_text(str(work), encoding="utf-8")
     script = [*s.script]
     for follow in s.followups:
         script += follow.script

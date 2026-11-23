@@ -34,3 +34,21 @@ def test_a_message_without_the_synthetic_key_is_inconclusive():
 def test_nonzero_exit_is_inconclusive():
     ev = evidence([req("/v1/messages", "synthetic", True)], exit_code=1)
     assert check_routing(ev)[0] == "inconclusive"
+
+
+def test_instructions_loaded_from_outside_the_run_is_inconclusive():
+    hook = {
+        "label": "a",
+        "input": {"hook_event_name": "InstructionsLoaded", "file_path": "/somewhere/CLAUDE.md"},
+    }
+    ev = Evidence(
+        Path("."),
+        Completed(0, "", "", False),
+        [req("/v1/messages", "synthetic", True)],
+        [hook],
+        [],
+        None,
+    )
+    outcome, reason = check_routing(ev)
+    assert outcome == "inconclusive"
+    assert "instruction file" in reason

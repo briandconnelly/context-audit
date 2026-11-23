@@ -121,3 +121,20 @@ def test_relative_run_dir_yields_absolute_paths(tmp_path, monkeypatch):
     settings = json.loads((result.run_dir / "settings.json").read_text())
     command = settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
     assert f"PROBE_HOOK_LOG={result.run_dir}/hooks.jsonl" in command
+
+
+def test_claude_runs_outside_the_home_tree(tmp_path, monkeypatch):
+    # Claude Code reads CLAUDE.md and .claude/skills from every ancestor of its working directory,
+    # so a working directory under the owner's home leaks their real instructions into the run.
+    body = (
+        "import os, pathlib, sys\n"
+        "log = pathlib.Path(sys.argv[sys.argv.index('--debug-file') + 1])\n"
+        "log.with_name('cwd.txt').write_text(os.getcwd())"
+    )
+    monkeypatch.setattr(runner, "CLAUDE_ARGV0", fake_claude(tmp_path, body))
+    result = run_scenario(scenario(), tmp_path / "run", timeout=10)
+    cwd = Path((result.run_dir / "cwd.txt").read_text()).resolve()
+    assert not cwd.is_relative_to(Path.home().resolve())
+    for ancestor in [cwd, *cwd.parents]:
+        assert not (ancestor / "CLAUDE.md").exists()
+        assert not (ancestor / ".claude").exists()

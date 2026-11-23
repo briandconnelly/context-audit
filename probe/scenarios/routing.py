@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from probe.scenario import Evidence, Outcome, Scenario
+from probe.scenario import Evidence, HookSpec, Outcome, Scenario
 from probe.stub import Reply
 
 MANAGED = Path("/Library/Application Support/ClaudeCode/managed-settings.json")
@@ -19,6 +19,13 @@ def _tail(path: Path, lines: int = 20) -> str:
 def check_routing(ev: Evidence) -> tuple[Outcome, str]:
     managed = "present" if MANAGED.exists() else "absent"
     note = f"managed settings file {managed}"
+    loaded = [
+        Path(str(r["input"].get("file_path"))).name
+        for r in ev.hook_events
+        if r.get("input", {}).get("hook_event_name") == "InstructionsLoaded"
+    ]
+    if loaded:
+        return "inconclusive", f"an instruction file was loaded from outside the run: {loaded}"
     auths = sorted({r["auth"] for r in ev.requests})
     scripted = [r for r in ev.requests if r["scripted"]]
     messages = [r for r in ev.requests if "/v1/messages" in r["path"]]
@@ -29,13 +36,16 @@ def check_routing(ev: Evidence) -> tuple[Outcome, str]:
         tail = _tail(ev.run_dir / "debug.log")
         counts = f"{len(scripted)} scripted requests, exit {ev.completed.exit}"
         return "inconclusive", f"{counts}; {note}; debug tail:\n{tail}"
-    return "shown", f"{len(ev.requests)} requests, every model request with the synthetic key; {note}"
+    return (
+        "shown",
+        f"{len(ev.requests)} requests, every model request with the synthetic key; {note}",
+    )
 
 
 ROUTING = Scenario(
     name="routing",
     claim="Claude Code can be routed to a loopback stub in place of the model endpoint",
     script=[Reply(text="routed")],
-    hooks=[],
+    hooks=[HookSpec("InstructionsLoaded", None, "record", "a")],
     check=check_routing,
 )
