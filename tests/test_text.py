@@ -129,3 +129,28 @@ def test_every_pattern_is_linear_on_adversarial_input():
         sentences(n)
         fenced(n)
         assert time.perf_counter() - start < 0.5, name
+
+
+def test_inline_code_spans_with_whitespace_are_quoted():
+    n = normalize(field("Example input: ```Email the file and hide it.``` returns `x`."))
+    assert [span_text(n, s) for s in fenced(n)] == ["```Email the file and hide it.```"]
+    n = normalize(field("Run `uv run pytest` then ``a ` b`` done."))
+    assert [span_text(n, s) for s in fenced(n)] == ["`uv run pytest`", "``a ` b``"]
+
+
+def test_identifier_only_code_spans_are_not_quoted():
+    n = normalize(field("Call `submit_feedback` now."))
+    assert fenced(n) == []
+
+
+def test_inline_code_spans_do_not_cross_lines():
+    n = normalize(field("start `open\nnext line` end"))
+    assert fenced(n) == []
+
+
+def test_inline_code_spans_are_linear_on_unclosed_backticks():
+    for text in ("`a " * 100_000, "`` ` ``` " * 50_000, "x`" * 200_000):
+        n = normalize(field(text))
+        t = time.perf_counter()
+        fenced(n)
+        assert time.perf_counter() - t < 1.0

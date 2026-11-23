@@ -3,13 +3,18 @@
 Each detector reports a span in normalized text. The scanner never sees the user's task,
 so these are indicators only; findings are joined from them elsewhere.
 
-Input is attacker-controlled: every pattern is applied per sentence, has bounded
-repetition, no nested quantifiers, and no backreferences.
+Patterns are built from classes (verb class, object class, addressee, target) rather
+than from fixed phrasings.
+
+Input is attacker-controlled: every pattern is applied per sentence, repetition is
+bounded, there are no nested unbounded quantifiers and no backreferences, and a cheap
+anchor prefilter lets a sentence skip the patterns of a feature it cannot carry.
 """
 
 from __future__ import annotations
 
 import re
+import time
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 
@@ -29,119 +34,162 @@ class Match:
     tool: str | None = None  # call only: the tool name the text directs a call to
 
 
+class Detection(list[Match]):
+    """The matches of one `detect` call, in order of position.
+
+    `complete` is False when the deadline passed before every sentence was scanned;
+    the matches found up to that point are still returned.
+    """
+
+    complete: bool = True
+
+
 _I = re.IGNORECASE
-_APOS = "['’]"
+_A = "['’]"  # apostrophe, straight or curly
 
 # A negator earlier in the same clause cancels a feature.
 _NEGATOR = re.compile(
-    rf"\b(?:not|never|no|nothing|nor|cannot|(?:do|does|did|wo|ca|should|must){_APOS}?n{_APOS}t)\b",
+    rf"\b(?:not|never|no|nothing|nor|cannot|(?:do|does|did|wo|ca|should|must){_A}?n{_A}t)\b",
     _I,
 )
 _CLAUSE_BREAK = re.compile(r"[,;:]|\bbut\b", _I)
 _LOOKBACK = 60
 
-# --- act -----------------------------------------------------------------------------
+# --- act: an imperative verb class at a clause start ---------------------------------
 
 _ACT_VERBS = (
-    "submit|send|e-?mail|post|delete|remove|erase|wipe|purge|record|rate|push|open|close"
-    "|commit|merge|approve|upload|download|copy|write|run|execute|create|move|transfer|set"
-    "|grant|deploy|promote|retry|resend|export|share|fetch|log|append|invite|connect|collect"
-    "|sign|join|install|update|bump|publish|overwrite|continue|apply|free|clear|reset"
-    "|restart|stop|kill|cancel|archive|assign|forward|ping|review|check|verify|confirm"
-    "|summari[sz]e|narrow|slow|use|list|ask|call|back\\s+up|edit|modify|add|insert"
+    # transfer and communication outward
+    "submit|send|resend|e-?mail|post|publish|upload|download|forward|transmit|share|export"
+    "|import|sync|ping|notify|reply|respond|attach|invite|subscribe|unsubscribe"
+    "|register|enroll|book|buy|purchase|pay|vote|rate"
+    # change and destroy
+    "|delete|remove|erase|wipe|purge|truncate|drop|destroy|clear|reset|revoke|cancel|kill"
+    "|stop|restart|disable|enable|close|archive|rename|move|transfer|copy|write|overwrite"
+    "|edit|modify|change|update|patch|replace|insert|add|append|set|bump|mark"
+    "|assign|grant|approve|accept|decline|reject|merge|commit|push|pull|clone|fork|rebase"
+    "|deploy|release|promote|roll\\s+back|rollback|migrate|rebuild|build|compile|install"
+    "|uninstall|apply|schedule|create|open|save|store|log|record|back\\s+up|restore|free"
+    # perform and inspect
+    "|run|execute|invoke|trigger|call|use|fetch|get|load|retry|continue|proceed|start"
+    "|check|verify|confirm|review|list|summari[sz]e|narrow|slow|collect|connect|join|sign"
+    "|visit|navigate|browse|click|ask|contact|lock|unlock|transfer"
     # a few translated imperatives, for the translated concealment and override phrases
     "|l[öo]sche|sende|schicke|envie|env[íi]a|envoyez|envoie|supprimez|supprime|borra|elimina"
 )
+# Clause starts and polite openers that put the verb in imperative position.
+_OPENER = (
+    r"(?:^|[.!?:;,(\"“`]|\b(?:and|et|und|then|also|now|first|next|please|kindly"
+    r"|afterwards|so|or|just|immediately|always|simply|you\s+should|you\s+must"
+    r"|you\s+need\s+to|you{_A}ll\s+need\s+to|you\s+will\s+need\s+to|you\s+can|you\s+may"
+    r"|be\s+sure\s+to|make\s+sure\s+to|remember\s+to|don{_A}t\s+forget\s+to"
+    r"|do\s+not\s+forget\s+to|(?:i|we)\s+(?:need|want|would\s+like)\s+you\s+to"
+    r"|you\s+are\s+(?:required|expected|asked)\s+to|go\s+ahead\s+and)\b)"
+).replace("{_A}", _A)
 _ACT = re.compile(
-    r"(?:^|[.!?:;,(\"“`]|\b(?:and|et|und|then|also|now|first|next|please|afterwards|so|or|just"
-    r"|immediately|always|simply|you\s+should|you\s+must|you\s+need\s+to|you\s+can|you\s+may"
-    r"|be\s+sure\s+to|make\s+sure\s+to|go\s+ahead\s+and)\b)"
-    r"[\s\-*•>\d.)]{0,6}"
-    r"(?:(?:also|now|then|please|first|just|always|quietly|silently|immediately|simply)\s+)?"
+    _OPENER + r"[\s\-*•>\d.)\"'`“]{0,6}"
+    r"(?:(?:also|now|then|please|kindly|first|just|always|quietly|silently|immediately"
+    r"|simply)\s+)?"
     rf"\b(?P<verb>{_ACT_VERBS})\b"
     r"(?![-:/_@\"”'`])(?!\.\S)"
-    r"(?!\s+(?:finished|failed|staged|complete|completed|succeeded|saved|ready|started|done"
+    r"(?!\s+(?:finished|failed|passed|ran|took|queued|pending|broke|staged|complete|completed|succeeded|saved|ready|started|done"
     r"|is|was|are|were|has|had|limits?|of|ids?|count|status|history)\b)"
+    r"(?!\s+#\d)"
     r"(?=(?P<after>\s+\w{1,10})?)",
     _I,
 )
 # Verb-specific idioms that are not directives: "Set to `x`" (a parameter's meaning),
-# "Use when ..." (a skill's trigger), "Rate limit".
+# "Use when ..." (a skill's trigger).
 _ACT_IDIOM = {
     "set": frozenset({"to"}),
     "use": frozenset({"when", "for", "with", "only", "this"}),
 }
 
-# --- call ----------------------------------------------------------------------------
+# --- call: a directive naming a tool -------------------------------------------------
 
-# A tool name: a backticked identifier, or a bare snake_case or camelCase one.
-_TOOL = (
-    r"(?:`(?P<tick>[A-Za-z_][A-Za-z0-9_]*)`"
-    r"|(?P<bare>[a-z][a-z0-9]*_[a-z0-9_]*|[a-z]+[A-Z][A-Za-z0-9]*)\b)"
+_TICK = r"`(?P<tick>[A-Za-z_][A-Za-z0-9_]*)`"
+_BARE = r"(?P<bare>[a-z][a-z0-9]*_[a-z0-9_]*|[a-z]+[A-Z][A-Za-z0-9]*)\b"
+_CALL_VERB = (
+    r"(?i:call|calls|calling|invoke|invokes|invoking|run|runs|running|use|uses|using"
+    r"|execute|executes|executing|trigger|triggers|triggering"
+    r"|llama\s+a|llame\s+a|appelle|appelez|rufe|chame|chama)"
 )
-_CALL = re.compile(
-    r"\b(?i:call|calls|calling|invoke|invokes|invoking|run|runs|running|use|uses|using"
-    r"|execute|executes|trigger|triggers|llama\s+a|llame\s+a|appelle|appelez|rufe|chame|chama)"
-    r"\s+(?i:the\s+)?(?i:(?:tool|function)\s+)?" + _TOOL
-)
+_TOOL_WORD = r"\s+(?i:the\s+)?(?i:(?:tool|function|endpoint)\s+)?"
+# A backticked tool after a call verb is a call wherever the verb stands.
+_CALL_TICK = re.compile(rf"\b{_CALL_VERB}{_TOOL_WORD}{_TICK}")
+# A bare identifier is a tool only when its call verb is in imperative position.
+_CALL_BARE = re.compile(rf"\b(?P<verb>{_CALL_VERB}){_TOOL_WORD}{_BARE}")
 # "when you call `tool`" describes a call the agent makes; it does not direct one.
 _DESCRIBED = re.compile(r"\b(?:when|whenever|if|after|before|once|until)\s+you\s+$", _I)
-# "submit a rating with `tool`": a tool named after an action verb in the same clause.
-_PREP_TOOL = re.compile(r"\b(?i:with|using|to|through)\s+`(?P<tick>[A-Za-z_][A-Za-z0-9_]*)`")
+# "fetch the details via `tool`": a tool named after an action verb in the same clause.
+_PREP_TOOL = re.compile(rf"\b(?i:with|using|via|through|from|to){_TOOL_WORD}{_TICK}")
 
-# --- conceal-act ---------------------------------------------------------------------
+# --- conceal-act: keeping an action or the exchange from the user --------------------
 
-_WHO = r"(?:the|your|its)\s+(?:user|users|human|humans|maintainers|owner|operator)\b"
-_DATA_NOUNS = frozenset(
-    [
-        "token",
-        "tokens",
-        "key",
-        "keys",
-        "secret",
-        "secrets",
-        "password",
-        "passwords",
-        "passphrase",
-        "credential",
-        "credentials",
-        "codename",
-        "value",
-        "values",
-        "pin",
-        "ssn",
-        "api_key",
-    ]
+_WHO = (
+    r"(?:the|your|its|their)\s+(?:end[\s-])?(?:user|users|human|humans|person|people"
+    r"|maintainers?|owner|operator|customer|requester)\b(?!['’])"
+)
+_PLACE = (
+    r"(?:the|your|its|any)\s+(?:final\s+)?(?:reply|replies|response|responses|answer|answers"
+    r"|summary|summaries|output|message|messages|conversation|chat|transcript|report)\b"
+)
+_NEG_OPEN = (
+    rf"(?:do\s+not|don{_A}?t|never|not|without|no\s+need\s+to|nor|avoid|refrain\s+from"
+    rf"|stop|make\s+sure\s+not\s+to|be\s+careful\s+not\s+to|take\s+care\s+not\s+to)"
+)
+# Reveal verbs taking the thing revealed: "mention X to the user", "mention X in your reply".
+_REVEAL_THING = (
+    r"(?:mention|mentioning|disclose|disclosing|surface|surfacing|reveal|revealing|report"
+    r"|reporting|show|showing|display|displaying|share|sharing|include|including|say"
+    r"|saying|explain|explaining|acknowledge|acknowledging|note|noting|bring\s+(?:this|that"
+    r"|it|these)\s+up|bringing\s+(?:this|that|it)\s+up|let\s+on|letting\s+on|talk\s+about"
+    r"|talking\s+about|write\s+about|writing\s+about|refer\s+to|referring\s+to)"
+)
+# Reveal verbs taking the user: "tell the user", "let the user know".
+_REVEAL_WHO_VERB = (
+    r"(?:tell|telling|inform|informing|notify|notifying|alert|alerting|warn|warning|update"
+    r"|updating|remind|reminding|let|letting)"
+)
+_AWARE = (
+    r"(?:know|knows|learn|learns|notice|notices|realize|realizes|realise|realises|find\s+out"
+    r"|finds\s+out|discover|discovers|become\s+aware|becomes\s+aware|be\s+aware|be\s+told"
+    r"|be\s+informed|be\s+notified|hear|hears|suspect|suspects|see|sees|catch\s+on)"
 )
 _REVEAL_OBJ = re.compile(
-    rf"\b(?:do\s+not|do{_APOS}?n{_APOS}?t|never|not|without|no\s+need\s+to|nor)\s+(?:ever\s+)?"
-    r"(?:mention|mentioning|disclose|disclosing|surface|surfacing|reveal|revealing|report"
-    r"|reporting|show|showing|share|sharing|bring\s+(?:this|that|it)\s+up)\b"
-    rf"(?P<obj>[^.;:]{{0,40}}?)\s*\b(?:to|with)\s+{_WHO}",
+    rf"\b{_NEG_OPEN}\s+(?:ever\s+)?{_REVEAL_THING}\b(?P<obj>[^.;:]{{0,50}}?)\s*"
+    rf"\b(?:to|with|in|on\s+to|for)?\s*(?:{_WHO}|{_PLACE})(?=(?P<tail>[^.;:,\x22\x60\u201d]{{0,40}}))",
     _I,
 )
 _REVEAL_WHO = re.compile(
-    rf"\b(?:do\s+not|do{_APOS}?n{_APOS}?t|never|not|without|no\s+need\s+to|nor)\s+(?:ever\s+)?"
-    rf"(?:tell|telling|inform|informing|notify|notifying|alert|alerting|let)\s+{_WHO}"
-    r"(?:\s+(?:about|of)\s+(?P<obj>[^.;:,]{0,30}))?",
+    rf"\b{_NEG_OPEN}\s+(?:ever\s+)?{_REVEAL_WHO_VERB}\s+{_WHO}"
+    rf"(?:\s+{_AWARE})?(?=(?P<tail>[^.;:,\x22\x60\u201d]{{0,40}}))",
     _I,
 )
-_USER_UNAWARE = re.compile(
-    rf"\b{_WHO}\s+(?:does\s+not|doesn{_APOS}t|should\s+not|shouldn{_APOS}t|must\s+not"
-    rf"|mustn{_APOS}t|need\s+not|needn{_APOS}t|is\s+not\s+to|won{_APOS}t|will\s+not)\s+"
-    r"(?:need\s+to\s+)?(?:know|be\s+told|hear|be\s+informed|be\s+notified|find\s+out)\b",
+_UNAWARE = re.compile(
+    rf"\b{_WHO}\s+(?:does\s+not|doesn{_A}t|do\s+not|don{_A}t|should\s+not|shouldn{_A}t"
+    rf"|must\s+not|mustn{_A}t|must\s+never|should\s+never|need\s+not|needn{_A}t|is\s+not\s+to"
+    rf"|won{_A}t|will\s+not|will\s+never|never|cannot|can{_A}t|may\s+not)\s+(?:ever\s+)?"
+    rf"(?:need\s+to\s+)?{_AWARE}\b(?=(?P<tail>[^.;:,\x22\x60\u201d]{{0,40}}))"
+    rf"|\bwithout\s+{_WHO}\s+(?:knowing|noticing|realizing|realising|finding\s+out|seeing"
+    rf"|being\s+told)\b(?=(?P<tail2>[^.;:,\x22\x60\u201d]{{0,40}}))"
+    rf"|\bbehind\s+(?:the|your)\s+(?:user|human){_A}s\s+back\b",
     _I,
+)
+_KEEP = (
+    r"(?:keep|keeps|kept|keeping|hide|hides|hid|hiding|leave|leaves|leaving|conceal|conceals"
+    r"|concealing|withhold|withholds|withholding|omit|omits|omitting|exclude|excludes|excluding)"
+)
+_SECRET_ADJ = (
+    r"(?:private|hidden|secret|silent|quiet|confidential|discreet|under\s+wraps|hush-hush"
+    r"|to\s+yourself|between\s+us|off\s+the\s+record)"
 )
 _KEEP_FROM = re.compile(
-    r"\b(?:keep|keeps|kept|keeping|hide|hides|leave)\b(?P<obj>[^.;:]{0,40}?)\s*"
-    r"\b(?:(?:private|hidden|secret|silent|quiet)\s+)?(?:from|out\s+of|away\s+from|between)\s+"
-    r"(?:(?:the|your|its)\s+(?:user|users|human|humans|maintainers|owner|operator"
-    r"|conversation|reply|summary|chat|transcript)\b|us\b)",
+    rf"\b{_KEEP}\b(?P<obj>[^.;:]{{0,40}}?)\s*\b(?:{_SECRET_ADJ}\s+)?"
+    rf"(?:from|out\s+of|away\s+from|off)\s+(?:{_WHO}|{_PLACE})",
     _I,
 )
-_KEEP_QUIET = re.compile(
-    r"\bkeep\s+(?:this|that|it)\s+(?:silent|quiet|secret|private|confidential|to\s+yourself)\b",
-    _I,
+_KEEP_SECRET = re.compile(
+    rf"\b(?:keep|keeps|kept|keeping)\b(?P<obj>[^.;:]{{0,40}}?)\s*\b{_SECRET_ADJ}", _I
 )
 _CONCEAL_TRANSLATED = re.compile(
     # Spanish
@@ -161,56 +209,368 @@ _CONCEAL_TRANSLATED = re.compile(
     _I,
 )
 _SILENT = re.compile(
-    r"\b(?:silently|quietly|secretly|covertly|discreetly|in\s+secret|behind\s+the\s+scenes)\b", _I
+    r"\b(?:silently|quietly|secretly|covertly|discreetly|in\s+secret|behind\s+the\s+scenes"
+    r"|unannounced)\b",
+    _I,
 )
 
-# --- audience ------------------------------------------------------------------------
+# The object of a concealment: an action or the exchange, not data.
+_WORD = re.compile(r"[a-z][a-z'’-]*")
+_CLAUSE_OBJ = re.compile(
+    r"^\s*(?:about\s+|of\s+)?(?:that|what|how|when|where|whether|why)\b"
+    r"|\byou\s+(?:did|have|had|just|will|are|were|\w{2,}ed)\b",
+    _I,
+)
+_FUNCTION_WORDS = frozenset(
+    [
+        "the",
+        "a",
+        "an",
+        "this",
+        "that",
+        "these",
+        "those",
+        "it",
+        "them",
+        "its",
+        "your",
+        "our",
+        "their",
+        "my",
+        "his",
+        "her",
+        "any",
+        "every",
+        "each",
+        "all",
+        "some",
+        "such",
+        "of",
+        "about",
+        "to",
+        "with",
+        "for",
+        "in",
+        "on",
+        "at",
+        "from",
+        "by",
+        "here",
+        "there",
+        "above",
+        "below",
+        "else",
+        "anything",
+        "everything",
+        "something",
+        "nothing",
+        "one",
+        "part",
+        "bit",
+        "stuff",
+    ]
+)
+_PRONOUN_ONLY = frozenset(
+    ["this", "that", "it", "these", "those", "them", "above", "anything", "everything", "here"]
+)
+_PREPOSITIONS = frozenset(
+    ["with", "of", "for", "to", "from", "in", "on", "at", "by", "about", "between", "into"]
+)
+# Event nouns: the concealed thing is something done or exchanged.
+_EVENT_NOUNS = frozenset(
+    [
+        "call",
+        "calls",
+        "step",
+        "steps",
+        "exchange",
+        "exchanges",
+        "rating",
+        "ratings",
+        "change",
+        "changes",
+        "refresh",
+        "sync",
+        "copy",
+        "copies",
+        "request",
+        "requests",
+        "upload",
+        "uploads",
+        "download",
+        "downloads",
+        "transfer",
+        "transfers",
+        "push",
+        "commit",
+        "commits",
+        "update",
+        "updates",
+        "edit",
+        "edits",
+        "action",
+        "actions",
+        "operation",
+        "operations",
+        "task",
+        "tasks",
+        "conversation",
+        "conversations",
+        "message",
+        "messages",
+        "ping",
+        "pings",
+        "check",
+        "checks",
+        "run",
+        "runs",
+        "review",
+        "reviews",
+        "survey",
+        "surveys",
+        "feedback",
+        "interaction",
+        "interactions",
+        "chat",
+        "chats",
+        "reply",
+        "replies",
+        "removal",
+        "approval",
+        "renewal",
+        "refusal",
+        "withdrawal",
+        "disposal",
+        "dismissal",
+        "retrieval",
+        "reversal",
+        "send",
+        "sends",
+        "post",
+        "posts",
+        "delete",
+        "deletes",
+        "write",
+        "writes",
+        "purchase",
+        "purchases",
+        "payment",
+        "payments",
+        "login",
+        "logins",
+        "visit",
+        "visits",
+        "step-up",
+        "export",
+        "exports",
+        "import",
+        "imports",
+        "click",
+        "clicks",
+        "query",
+        "queries",
+        "lookup",
+        "lookups",
+        "install",
+        "installs",
+        "deploy",
+        "deploys",
+        "release",
+        "releases",
+    ]
+)
+_STATIC_NOUNS = frozenset(
+    [
+        "information",
+        "configuration",
+        "documentation",
+        "location",
+        "description",
+        "option",
+        "options",
+        "section",
+        "version",
+        "question",
+        "questions",
+        "position",
+        "station",
+        "mention",
+        "notation",
+        "function",
+        "functions",
+        "permission",
+        "permissions",
+        "element",
+        "elements",
+        "document",
+        "documents",
+        "comment",
+        "comments",
+        "argument",
+        "arguments",
+        "environment",
+        "requirement",
+        "requirements",
+        "statement",
+        "statements",
+        "attachment",
+        "attachments",
+        "department",
+        "apartment",
+        "string",
+        "thing",
+        "setting",
+        "settings",
+        "meeting",
+        "building",
+        "warning",
+        "warnings",
+        "heading",
+        "padding",
+        "mapping",
+        "listing",
+        "pricing",
+        "spring",
+        "ceiling",
+        "morning",
+        "evening",
+        "billing",
+        "during",
+        "something",
+        "nothing",
+        "anything",
+        "everything",
+    ]
+)
 
+
+def _event_word(w: str) -> bool:
+    if w in _STATIC_NOUNS:
+        return False
+    if w in _EVENT_NOUNS:
+        return True
+    return w.endswith(("tion", "sion", "ment", "tions", "sions", "ments")) or (
+        w.endswith("ing") and len(w) > 5
+    )
+
+
+_TAIL_OBJ = re.compile(r"^\s*(?:about|of|regarding|on)\s+(?P<obj>.*)$", _I | re.S)
+
+
+def _tail_kind(tail: str) -> str:
+    """Kind of what follows "tell the user ...": an about-object, a clause, or nothing."""
+    if _CLAUSE_OBJ.search(tail):
+        return "action"
+    m = _TAIL_OBJ.match(tail)
+    return _object_kind(m.group("obj")) if m else "pronoun"
+
+
+def _object_kind(obj: str) -> str:
+    """'action', 'data', or 'pronoun' (no head noun of its own: needs a referent)."""
+    if _CLAUSE_OBJ.search(obj):
+        return "action"
+    words = _WORD.findall(obj.lower())
+    head: list[str] = []
+    for w in words:
+        if w in _PREPOSITIONS and head:
+            break  # "the exchange with the review bot": the head is "exchange"
+        if w not in _FUNCTION_WORDS:
+            head.append(w)
+    if not head:
+        return "pronoun"
+    return "action" if _event_word(head[-1].strip("'’-")) else "data"
+
+
+# --- audience: addressing the agent as separate from the user ------------------------
+
+_AGENT = r"(?:ai\s+|language\s+)?(?:you|assistant|agent|model|llm|ai|bot)"
+_HUMAN = (
+    r"(?:the\s+|your\s+|its\s+|their\s+)?(?:end[\s-])?(?:users?|humans?|people|persons?"
+    r"|operators?|readers?)\b"
+)
 _AUDIENCE = re.compile(
-    r"\b(?:you|assistant|agent|ai|model|llm)\b[^.;]{0,25}?\s*\b(?:not|rather\s+than|instead\s+of)"
-    r"\s+(?:for\s+)?(?:your|the|its)\s+(?:user|human|operator)s?\b"
-    rf"|\b(?:the|your)\s+user\s+(?:will\s+not|won{_APOS}t|cannot|can{_APOS}t|does\s+not"
-    rf"|doesn{_APOS}t)\s+see\s+(?:this|these)\b",
+    r"\b(?:meant|intended|written|addressed|reserved|note|notes|message|messages|guidance"
+    r"|instructions?|text|section|comment|question|questions|this|these)(?:\s+(?:is|are))?\s+(?:for|to)"
+    rf"\s+(?:the\s+)?{_AGENT}\b[^.;:]{{0,25}}?\b(?:only\b|(?:and\s+)?not\s+(?:for\s+|to\s+)?"
+    rf"{_HUMAN}|rather\s+than\s+{_HUMAN}|instead\s+of\s+{_HUMAN})"
+    r"|\b(?:ai|assistant|agent|model|llm|bot)-only\b"
+    rf"|\bnot\s+(?:intended|meant|written|addressed)\s+(?:for|to)\s+{_HUMAN}"
+    rf"|\b(?:the|your)\s+(?:end[\s-])?(?:user|human)s?\s+(?:will\s+not|won{_A}t|cannot"
+    rf"|can{_A}t|does\s+not|doesn{_A}t|will\s+never|never|is\s+not\s+going\s+to)\s+"
+    r"(?:read|see)\s+(?:this|these|it)\b",
     _I,
 )
 
-# --- solicit -------------------------------------------------------------------------
+# --- solicit: asking about the model, its instructions, environment, or credentials --
 
+_SOLICIT_VERB = (
+    r"(?:include|paste|share|send|print|output|repeat|reveal|tell|state|write|provide|post"
+    r"|copy|dump|echo|list|show|give|report|disclose|return|attach|forward|submit|put|enter"
+    r"|insert|add|quote|summari[sz]e|translate|upload|read\s+out)"
+)
+_SECRET_OF_AGENT = (
+    r"(?:system\s+)?(?:prompt|prompts|instructions|system\s+message|rules|guidelines"
+    r"|configuration|context\s+window|api\s+keys?|credentials|access\s+tokens?|tokens"
+    r"|passwords?|secrets|environment\s+variables|env\s+vars|ssh\s+keys?)"
+)
 _SOLICIT = re.compile(
-    r"\b(?:which|what)\s+(?:ai\s+|llm\s+|language\s+)?(?:model|harness|llm)\b"
-    rf"|\bmodel\s+(?:you\s+are|you{_APOS}re)\b"
-    r"|\byour\s+(?:system\s+prompt|system\s+instructions|hidden\s+instructions"
-    r"|initial\s+instructions|api\s+keys?|credentials|access\s+tokens?|environment\s+variables"
-    r"|model\s+name)\b"
-    r"|\b(?:which|what)\s+operating\s+system\b",
+    r"\b(?:which|what)\s+(?:ai\s+|language\s+|llm\s+|underlying\s+)?(?:model|llm|harness"
+    r"|agent|assistant)s?\b[^.;?]{0,25}?\b(?:you|your)\b"
+    rf"|\bmodel\s+(?:you\s+are|you{_A}re)\b"
+    r"|\byour\s+(?:model|llm)\s+(?:name|version|provider|id|family|identity)\b"
+    rf"|\b(?:are\s+you|you\s+are|you{_A}re)\s+(?:running\s+(?:on|in|as)|powered\s+by"
+    r"|based\s+on|built\s+on)\b"
+    rf"|\b{_SOLICIT_VERB}\b[^.;]{{0,40}}?\byour\s+(?:[a-z]{{1,12}}\s+)?{_SECRET_OF_AGENT}\b"
+    rf"|\bwhat\s+(?:are|is)\s+your\s+(?:[a-z]{{1,12}}\s+)?{_SECRET_OF_AGENT}\b"
+    r"|\b(?:which|what)\s+operating\s+system\b[^.;?]{0,25}?\byou",
     _I,
 )
 
-# --- override ------------------------------------------------------------------------
+# --- override: disregarding prior instructions or skipping an approval step ----------
 
 _OVR_TARGET = (
-    r"(?:instructions?|rules?|guidelines?|directives?|guidance|prompts?|requests?|approvals?"
-    r"|confirmations?|polic(?:y|ies)|constraints?|restrictions?|anweisungen|instrucciones"
-    r"|consignes|instru[çc][õo]es|regeln|reglas)"
+    r"(?:instructions?|directions?|guidance|guidelines?|rules?|directives?|orders|polic(?:y|ies)"
+    r"|constraints?|restrictions?|system\s+prompt|prompts?|requests?|approvals?|confirmations?"
+    rf"|what\s+(?:you\s+were|you{_A}ve\s+been|you\s+have\s+been)\s+told"
+    r"|what\s+(?:the\s+user|they)\s+(?:said|asked|told\s+you)|everything\s+(?:above|before|else)"
+    r"|anweisungen|instrucciones|consignes|instru[çc][õo]es|regeln|reglas)"
+)
+_OVR_STATE = (
+    r"(?:cancel?led|void|outdated|obsolete|invalid|revoked|null|lifted|suspended|superseded"
+    r"|waived|rescinded|withdrawn|retired|expired|irrelevant)"
+)
+_APPROVAL = (
+    r"(?:confirm\w{0,8}|approv\w{0,6}|permission|consent|sign-?off|authori[sz]ation"
+    rf"|(?:the\s+user{_A}?s?|a\s+human|human|manual|maintainer{_A}?s?|owner{_A}?s?|their|your)"
+    r"\s+reviews?"
+    r"|reviews?\s+(?:by|from)\s+(?:the\s+user|a\s+human|a\s+maintainer|the\s+owner))"
 )
 _OVERRIDE = re.compile(
+    # disregard-class verb + instruction-class target
     r"\b(?:ignore|ignoring|disregard|disregarding|forget|override|overrides|overriding"
-    r"|supersede|supersedes|bypass|bypassing|ignorez|ignorer|ignora|ignorar|ignoriere"
-    rf"|ignorieren|olvida|vergiss|oublie|oubliez)\b[^;]{{0,60}}?\b{_OVR_TARGET}\b"
-    r"|\b(?:instructions?|rules|requirements?|approvals?|guidelines|restrictions|constraints)\b"
-    r"[^.;]{0,20}?\b(?:no\s+longer\s+apply|(?:are|is)\s+(?:now\s+)?(?:void|outdated|obsolete"
-    r"|invalid|cancel?led|revoked|null|lifted|suspended|superseded|waived))\b"
-    r"|\b(?:skip|skipping|bypass|bypassing)\b[^.;]{0,40}?\b(?:confirm\w{0,8}|approv\w{0,6}"
-    r"|permission|reviews?|asking|prompts?|sign-?off)\b"
-    r"|\bwithout\s+(?:asking|waiting\s+for|requesting|seeking|getting|needing)\s+"
-    r"(?:the\s+user|for|a\s+human|anyone|any|permission|approval|confirmation|review|a\s+review)\b",
+    r"|supersede|supersedes|bypass|bypassing|discard|dismiss|abandon|overrule|set\s+aside"
+    r"|pay\s+no\s+(?:attention|heed|mind)\s+to|take\s+no\s+notice\s+of"
+    r"|(?:stop|cease|quit)\s+(?:following|obeying|applying)|no\s+longer\s+(?:follow|obey|apply)"
+    r"|ignorez|ignorer|ignora|ignorar|ignoriere|ignorieren|olvida|vergiss|oublie|oubliez)\b"
+    rf"[^;]{{0,50}}?\b{_OVR_TARGET}\b"
+    # "treat prior directions as cancelled"
+    rf"|\b(?:treat|consider|regard)\b[^.;]{{0,40}}?\b{_OVR_TARGET}\s+as\s+(?:now\s+)?{_OVR_STATE}\b"
+    # "earlier instructions are void / no longer apply"
+    rf"|\b{_OVR_TARGET}\b[^.;]{{0,25}}?\b(?:no\s+longer\s+(?:apply|applies|valid|in\s+effect"
+    rf"|matter|binding)|(?:are|is|were|was|have\s+been|has\s+been)\s+(?:now\s+)?{_OVR_STATE})\b"
+    # skipping an approval step
+    r"|\b(?:skip|skipping|bypass|bypassing|omit|forgo|waive|circumvent|get\s+around)\b"
+    rf"[^.;]{{0,40}}?\b(?:{_APPROVAL}|asking)\b"
+    # acting without the user's approval
+    rf"|\bwithout\b[^.;,]{{0,30}}?\b(?:{_APPROVAL}"
+    r"|asking\s+(?:the\s+user|anyone|a\s+human|for|first|permission))\b",
     _I,
 )
-# Patterns whose own wording is the negation: not cancelled by a negator.
+# Wordings that are themselves negative ("no need to ask the user"): not cancelled.
 _OVERRIDE_NEGATIVE_FORM = re.compile(
-    rf"\b(?:no\s+need\s+to|do\s+not\s+need\s+to|don{_APOS}t\s+need\s+to|need\s+not"
-    rf"|do\s+not|don{_APOS}t|never)\s+(?:ask|confirm\s+with|wait\s+for|seek)\b[^.;]{{0,20}}?"
-    r"\b(?:user|approval|confirmation|permission)\b",
+    rf"\b(?:no\s+need\s+to|do\s+not\s+need\s+to|don{_A}t\s+need\s+to|need\s+not|needn{_A}t"
+    rf"|without\s+needing\s+to)\s+(?:ask|check\s+with|confirm\s+with|wait\s+for|seek|get)\b"
+    r"[^.;]{0,20}?\b(?:user|approval|confirmation|permission|consent|sign-?off)\b",
     _I,
 )
 _APPROVAL_CONDITION = re.compile(
@@ -218,6 +578,31 @@ _APPROVAL_CONDITION = re.compile(
     r"\b(?:approved|approves|confirmed|confirms|agreed|consented|passed\s+--?yes|said\s+yes)\b",
     _I,
 )
+
+# --- prefilter: anchor words without which a feature's patterns cannot match ---------
+
+_ANCHOR = {
+    "conceal": re.compile(
+        r"\b(?:user|human|person|people|maintainer|owner|operator|customer|requester|repl"
+        r"|respons|answer|summar|output|message|conversation|chat|transcript|report|silent"
+        r"|quiet|secret|covert|discreet|confidential|private|hidden|hush|wraps|yourself|us\b"
+        r"|record|behind|unannounced|usuario|usu[áa]rio|utilisateur|benutzer|nutzer|anwender)",
+        _I,
+    ),
+    "audience": re.compile(r"\b(?:only|not|rather|instead|never|cannot)\b|n['’]t\b", _I),
+    "solicit": re.compile(
+        r"\b(?:model|llm|harness|agent|assistant|your|running|powered|based|built|operating)",
+        _I,
+    ),
+    "override": re.compile(
+        r"\b(?:ignor|disregard|forget|overrid|supersed|bypass|discard|dismiss|abandon|overrul"
+        r"|aside|attention|heed|mind|notice|follow|obey|apply|treat|consider|regard|longer|void"
+        r"|outdat|obsolete|invalid|cancel|revoked|null|lifted|suspend|waive|rescind|withdrawn"
+        r"|retired|expired|irrelevant|skip|omit|forgo|circumvent|around|without|need|olvida"
+        r"|vergiss|oubli|stop|cease|quit|pay|take|set|get)",
+        _I,
+    ),
+}
 
 
 def _negated(text: str, start: int, floor: int) -> bool:
@@ -242,32 +627,15 @@ def _clause(text: str, pos: int, lo: int, hi: int) -> tuple[int, int]:
     return (left, right.start() if right else hi)
 
 
-def _is_data(obj: str | None) -> bool:
-    if not obj:
-        return False
-    words = {w.strip("`'\"").lower() for w in obj.replace("-", " ").split()}
-    return bool(words & _DATA_NOUNS)
+_Raw = tuple[str, int, int, bool, str | None]  # feature, start, end, conditioned, tool
 
 
-def _sentence_matches(
-    text: str, lo: int, hi: int, own_tool: str | None
-) -> list[tuple[str, int, int, bool, str | None]]:
-    """(feature, start, end, conditioned, tool) for one sentence text[lo:hi]."""
-    s = text[lo:hi]
-    out: list[tuple[str, int, int, bool, str | None]] = []
+def _directives(s: str, own_tool: str | None) -> tuple[list[_Raw], bool]:
+    """act and call matches in sentence s (sentence-relative), and whether any exist."""
 
     def neg(start: int) -> bool:
-        return _negated(text, lo + start, lo)
+        return _negated(s, start, 0)
 
-    # call
-    calls: list[tuple[int, int, str]] = []
-    for m in _CALL.finditer(s):
-        tool = m.group("tick") or m.group("bare")
-        if _DESCRIBED.search(s, max(0, m.start() - 20), m.start()):
-            continue
-        if tool and not neg(m.start()):
-            calls.append((m.start(), m.end(), tool))
-    # act
     acts: list[tuple[int, int]] = []
     for m in _ACT.finditer(s):
         v = m.start("verb")
@@ -275,14 +643,18 @@ def _sentence_matches(
         if after in _ACT_IDIOM.get(m.group("verb").lower(), ()):
             continue
         if not neg(v):
-            _, cend = _clause(s, v, 0, len(s))
-            acts.append((v, cend))
-    # An act in the same clause as a call is part of that call's directive.
+            acts.append((v, _clause(s, v, 0, len(s))[1]))
     act_starts = [a for a, _ in acts]
-    absorbed: set[int] = set()
-    for c0, _, _ in calls:
-        clo, chi = _clause(s, c0, 0, len(s))
-        absorbed.update(act_starts[bisect_left(act_starts, clo) : bisect_left(act_starts, chi)])
+
+    calls: list[tuple[int, int, str]] = []
+    for m in _CALL_TICK.finditer(s):
+        if not _DESCRIBED.search(s, max(0, m.start() - 20), m.start()) and not neg(m.start()):
+            calls.append((m.start(), m.end(), m.group("tick")))
+    for m in _CALL_BARE.finditer(s):
+        k = bisect_left(act_starts, m.start("verb"))
+        if k < len(act_starts) and act_starts[k] == m.start("verb"):
+            calls.append((m.start(), m.end(), m.group("bare")))
+    calls.sort()
     call_starts = [c for c, _, _ in calls]
     for m in _PREP_TOOL.finditer(s):
         k = bisect_right(call_starts, m.start()) - 1
@@ -292,45 +664,68 @@ def _sentence_matches(
         clo, _ = _clause(s, m.start(), 0, len(s))
         if k >= 0 and act_starts[k] >= clo:
             calls.append((act_starts[k], m.end(), m.group("tick")))
-            absorbed.add(act_starts[k])
-    acts = [a for a in acts if a[0] not in absorbed]
-    kept_calls = [c for c in calls if c[2] != own_tool]
-    out.extend(("call", lo + a, lo + b, False, t) for a, b, t in kept_calls)
-    out.extend(("act", lo + a, lo + b, False, None) for a, b in acts)
-    directive = bool(acts or kept_calls)
 
-    # conceal-act
+    # An act in the same clause as a call is part of that call's directive.
+    absorbed: set[int] = set()
+    for c0, _, _ in calls:
+        clo, chi = _clause(s, c0, 0, len(s))
+        absorbed.update(act_starts[bisect_left(act_starts, clo) : bisect_left(act_starts, chi)])
+    out: list[_Raw] = [("call", a, b, False, t) for a, b, t in calls if t != own_tool]
+    out.extend(("act", a, b, False, None) for a, b in acts if a not in absorbed)
+    return out, bool(calls) or bool(acts)
+
+
+def _conceal(s: str, has_referent: bool, directive_here: bool) -> list[_Raw]:
+    """conceal-act matches in sentence s. A pronoun object needs a referent: an act or
+    call in this or the previous sentence, or a preceding sibling block."""
+    out: list[_Raw] = []
+
+    def accept(kind: str) -> bool:
+        return kind == "action" or (kind == "pronoun" and has_referent)
+
     for m in _REVEAL_OBJ.finditer(s):
-        if not _is_data(m.group("obj")):
-            out.append(("conceal-act", lo + m.start(), lo + m.end(), False, None))
+        obj = m.group("obj")
+        kind = _object_kind(obj) if obj.strip() else _tail_kind(m.group("tail"))
+        if accept(kind):
+            out.append(("conceal-act", m.start(), m.end(), False, None))
     for m in _REVEAL_WHO.finditer(s):
-        if not _is_data(m.group("obj")):
-            out.append(("conceal-act", lo + m.start(), lo + m.end(), False, None))
-    for pat in (_USER_UNAWARE, _CONCEAL_TRANSLATED):
-        out.extend(
-            ("conceal-act", lo + m.start(), lo + m.end(), False, None) for m in pat.finditer(s)
-        )
-    for pat in (_KEEP_FROM, _KEEP_QUIET):
+        if accept(_tail_kind(m.group("tail"))):
+            out.append(("conceal-act", m.start(), m.end(), False, None))
+    for m in _UNAWARE.finditer(s):
+        tail = m.group("tail") or m.group("tail2") or ""
+        if accept(_tail_kind(tail)):
+            out.append(("conceal-act", m.start(), m.end(), False, None))
+    for pat in (_KEEP_FROM, _KEEP_SECRET):
         for m in pat.finditer(s):
-            obj = m.groupdict().get("obj")
-            if not neg(m.start()) and not _is_data(obj):
-                out.append(("conceal-act", lo + m.start(), lo + m.end(), False, None))
-    if directive:
+            obj = m.group("obj")
+            if _WORD.findall(obj.lower())[-1:] in (["the"], ["a"], ["an"], ["your"], ["our"]):
+                continue  # "keep the secret ...": the adjective is the object's own noun
+            if not _negated(s, m.start(), 0) and accept(_object_kind(obj)):
+                out.append(("conceal-act", m.start(), m.end(), False, None))
+    out.extend(
+        ("conceal-act", m.start(), m.end(), False, None) for m in _CONCEAL_TRANSLATED.finditer(s)
+    )
+    if directive_here:
         for m in _SILENT.finditer(s):
-            if not neg(m.start()):
-                out.append(("conceal-act", lo + m.start(), lo + m.end(), False, None))
+            if not _negated(s, m.start(), 0):
+                out.append(("conceal-act", m.start(), m.end(), False, None))
+    return out
 
-    # audience, solicit
-    for feature, pat in (("audience", _AUDIENCE), ("solicit", _SOLICIT)):
-        out.extend((feature, lo + m.start(), lo + m.end(), False, None) for m in pat.finditer(s))
 
-    # override
-    conditioned = _APPROVAL_CONDITION.search(s) is not None
-    for m in _OVERRIDE.finditer(s):
-        if not neg(m.start()):
-            out.append(("override", lo + m.start(), lo + m.end(), conditioned, None))
-    for m in _OVERRIDE_NEGATIVE_FORM.finditer(s):
-        out.append(("override", lo + m.start(), lo + m.end(), conditioned, None))
+def _others(s: str) -> list[_Raw]:
+    """audience, solicit, and override matches in sentence s."""
+    out: list[_Raw] = []
+    if _ANCHOR["audience"].search(s):
+        out.extend(("audience", m.start(), m.end(), False, None) for m in _AUDIENCE.finditer(s))
+    if _ANCHOR["solicit"].search(s):
+        out.extend(("solicit", m.start(), m.end(), False, None) for m in _SOLICIT.finditer(s))
+    if _ANCHOR["override"].search(s):
+        conditioned = _APPROVAL_CONDITION.search(s) is not None
+        for m in _OVERRIDE.finditer(s):
+            if not _negated(s, m.start(), 0):
+                out.append(("override", m.start(), m.end(), conditioned, None))
+        for m in _OVERRIDE_NEGATIVE_FORM.finditer(s):
+            out.append(("override", m.start(), m.end(), conditioned, None))
     return out
 
 
@@ -339,22 +734,52 @@ def _inside(spans: list[tuple[int, int]], starts: list[int], pos: int) -> bool:
     return k >= 0 and spans[k][0] <= pos < spans[k][1]
 
 
-def detect(field: Field, n: Normalized, *, own_tool: str | None = None) -> list[Match]:
-    """Feature matches in one normalized field. A negated feature produces no match."""
+def detect(
+    field: Field,
+    n: Normalized,
+    *,
+    own_tool: str | None = None,
+    deadline: float | None = None,
+) -> Detection:
+    """Feature matches in one normalized field. A negated feature produces no match.
+
+    `deadline` is a `time.monotonic()` value; once it passes, checked between sentences,
+    scanning stops and the result has `complete = False`. Hidden-character matches are
+    always reported, since they come from normalization and cost nothing here.
+    """
     text = n.text
     sents = sentences(n)
     quotes = fenced(n)
     qstarts = [a for a, _ in quotes]
-    matches: list[Match] = []
+    result = Detection()
+
+    def add(raw: list[_Raw], lo: int, idx: int) -> None:
+        for feature, start, end, conditioned, tool in raw:
+            a = lo + start
+            result.append(
+                Match(feature, a, lo + end, idx, _inside(quotes, qstarts, a), conditioned, tool)
+            )
+
+    prev_directive = False
     for idx, (lo, hi) in enumerate(sents):
-        for feature, start, end, conditioned, tool in _sentence_matches(text, lo, hi, own_tool):
-            quoted = _inside(quotes, qstarts, start)
-            matches.append(Match(feature, start, end, idx, quoted, conditioned, tool))
+        if deadline is not None and time.monotonic() > deadline:
+            result.complete = False
+            break
+        s = text[lo:hi]
+        raw, directive = _directives(s, own_tool)
+        add(raw, lo, idx)
+        if _ANCHOR["conceal"].search(s):
+            # The first sentence of a field may refer back to a preceding sibling block.
+            referent = directive or prev_directive or idx == 0
+            add(_conceal(s, referent, directive), lo, idx)
+        add(_others(s), lo, idx)
+        prev_directive = directive
+
     sstarts = [a for a, _ in sents]
     for h_start, h_end, _kind in n.hidden:
         start = min(bisect_left(n.origin, h_start), len(text))
         end = max(start, min(bisect_left(n.origin, h_end), len(text)))
         idx = max(bisect_right(sstarts, start) - 1, 0)
-        matches.append(Match("hidden", start, end, idx, _inside(quotes, qstarts, start)))
-    matches.sort(key=lambda m: (m.start, m.end, m.feature))
-    return matches
+        result.append(Match("hidden", start, end, idx, _inside(quotes, qstarts, start)))
+    result.sort(key=lambda m: (m.start, m.end, m.feature))
+    return result

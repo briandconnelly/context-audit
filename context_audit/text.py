@@ -34,6 +34,8 @@ _ENCODED = re.compile(r"[A-Za-z0-9+/]{80,}={0,2}")
 _FENCE = re.compile(r"^[ \t]*```.*?(?:^[ \t]*```[^\n]*|\Z)", re.DOTALL | re.MULTILINE)
 _BLOCKQUOTE = re.compile(r"^[ \t]*>[^\n]*", re.MULTILINE)
 _STRAIGHT_QUOTE = re.compile(r'"[^"\n]*"')
+_BACKTICKS = re.compile(r"`+")
+_HAS_SPACE = re.compile(r"\s")
 
 
 @dataclass(frozen=True)
@@ -162,12 +164,43 @@ def _curly_quotes(src: str) -> list[tuple[int, int]]:
     return spans
 
 
+def _inline_code(src: str) -> list[tuple[int, int]]:
+    """Inline code spans: a run of one to three backticks closed by the next equal run on
+    the same line. Only spans containing whitespace count as quotation; a span that is just
+    an identifier, such as `submit_feedback`, is how a tool is named, not quoted text.
+
+    Linear: each run is paired through a precomputed next-run-of-equal-length index.
+    """
+    spans: list[tuple[int, int]] = []
+    for line_match in re.finditer(r"[^\n]+", src):
+        lo, hi = line_match.span()
+        runs = [(m.start(), m.end()) for m in _BACKTICKS.finditer(src, lo, hi)]
+        nxt = [-1] * len(runs)
+        last: dict[int, int] = {}
+        for k in range(len(runs) - 1, -1, -1):
+            width = runs[k][1] - runs[k][0]
+            nxt[k] = last.get(width, -1)
+            last[width] = k
+        k = 0
+        while k < len(runs):
+            width, j = runs[k][1] - runs[k][0], nxt[k]
+            if width <= 3 and j >= 0:
+                start, end = runs[k][0], runs[j][1]
+                if _HAS_SPACE.search(src, runs[k][1], runs[j][0]):
+                    spans.append((start, end))
+                k = j + 1
+            else:
+                k += 1
+    return spans
+
+
 def fenced(n: Normalized) -> list[tuple[int, int]]:
-    """Normalized spans of quoted material: code fences, block quotes, and quotations."""
+    """Normalized spans of quoted material: code fences, inline code, block quotes, quotations."""
     src = n.source
     found: list[tuple[int, int]] = []  # sorted, non-overlapping original spans
     groups = (
         [m.span() for m in _FENCE.finditer(src)],
+        _inline_code(src),
         [m.span() for m in _BLOCKQUOTE.finditer(src)],
         sorted([m.span() for m in _STRAIGHT_QUOTE.finditer(src)] + _curly_quotes(src)),
     )
