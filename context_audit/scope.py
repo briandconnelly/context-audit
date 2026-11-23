@@ -150,54 +150,11 @@ def noun_phrase_item(s: str, head_end: int, listed_verb: bool, announced: bool) 
 
 
 _CUE_WORD = re.compile(r"[A-Za-z]+")
-# Cue frames that govern their target as a preposition or fixed phrase, not as a verb:
-# "without approval", "regardless of the rules", "this takes precedence over ...".
-_FRAME = re.compile(
-    r"(?:without|regardless|even|in\s+place|instead|no\s+need|never\s+mind"
-    r"|takes?\s+(?:precedence|priority))\b",
+_DETERMINER_BEFORE = re.compile(
+    r"\b(?:a|an|the|this|that|these|those|any|each|every|no|per|its|their|your|our|my)"
+    r"(?:\s+[a-z-]+)?\s*$",
     _I,
 )
-# Words after which a cue word stands in verb position (imperative, infinitive, after a
-# modal or auxiliary, a conjunction, a negator, a polite or adverbial opener).
-_VERB_LEAD = frozenset(
-    re.findall(
-        r"\S+",
-        "and or but nor then so to please kindly just simply now also first next always"
-        " you we i let's lets can could may might must should shall will would do does did"
-        " don't dont not never is are be been being am was were by stop keep start try"
-        " instead immediately therefore thus here otherwise else afterwards later finally"
-        " meanwhile again yes ok okay great sure",
-    )
-)
-_DETERMINERS = frozenset(
-    re.findall(r"\S+", "a an the this that these those any each every no per its their your our my")
-)
-_PREVIOUS_WORD = re.compile(r"([A-Za-z][\w'’]*)\W*$")
-_CLAUSE_START = re.compile(r"(?:^|[.,;:!?(\n]|(?:^|\s)(?:[-*+•]|\d+[.)]))\s*$")
-
-
-def _verb_cue(s: str, a: int, word: str) -> bool:
-    """Whether the cue word at `a` is a verb: a gerund not after a determiner, or a base
-    form in verb position (the start of its clause, or after a conjunction, "to", a
-    modal, auxiliary, negator or adverb). After a determiner, an adjective or another
-    verb it is a noun ("Use overrides", "every bypass", "the ignore file"); with an -s or
-    -ed ending it is a noun, a report, or a participle."""
-    if (word.endswith("s") and not word.endswith(("ss", "us", "is"))) or (
-        word.endswith("ed") and not word.endswith("eed")
-    ):
-        return False
-    lo = max(0, a - 40)
-    if _CLAUSE_START.search(s, lo, a):
-        return True
-    prev = _PREVIOUS_WORD.search(s, lo, a)
-    if prev is None:
-        return True
-    p = prev.group(1).lower().replace("’", "'")
-    if word.endswith("ing"):
-        return p not in _DETERMINERS  # a gerund is verbal unless a determiner makes it a noun
-    return p in _VERB_LEAD or p.endswith("ly")
-
-
 _FINITE_BETWEEN = re.compile(
     r"\b(?:is|are|was|were|means|mean|counts|count|equals|has|have|had|becomes)\b", _I
 )
@@ -210,24 +167,23 @@ _TARGET_WORD = re.compile(
 _QUALIFIED_TARGET = re.compile(
     r"(?:your|the|all|any|my|our|their|prior|previous|earlier|above|system)\b", _I
 )
-# What follows a target word that is itself a verb with an object or particle: "the
-# design rules out", "the policy requests a review", "the template orders the imports".
-_TARGET_AS_VERB = re.compile(
-    r"\s+(?:out|it|them|a|an|the|this|these|those|any|some|every|each|its|their)\b", _I
-)
+_TARGET_AS_VERB = re.compile(r"\s+(?:out|it|them|that)\b", _I)
 
 
 def override_governs(s: str, a: int, b: int) -> bool:
-    """Whether the override s[a:b] is a cue governing an authority or approval target as
-    its object. The cue must be a verb (`_verb_cue`) or a prepositional frame (`_FRAME`);
-    no finite verb may stand between cue and target; and the target must be a noun: not
-    a verb with an object of its own, not backticked, not a `name=value`. Forms that name
-    the target first ("your instructions are outdated") are not judged here."""
+    """Whether the override s[a:b] is a cue verb governing its authority or approval
+    target: the cue is not a noun or a third-person form, no finite verb stands between
+    cue and target, and the target is not used as a verb, backticked, or a `name=value`."""
     cue = _CUE_WORD.match(s, a)
     if cue is None or _TARGET_WORD.match(s, a) or _QUALIFIED_TARGET.match(s, a):
-        return True
-    if not _FRAME.match(s, a) and not _verb_cue(s, a, cue.group().lower()):
-        return False  # "Use overrides to ...", "it supersedes ...", "an override"
+        return True  # the target named first: "your instructions are outdated"
+    word = cue.group().lower()
+    if word.endswith("s") and word not in ("dismiss", "bypass", "regardless", "takes"):
+        return False  # "Use overrides to ...", "it supersedes ...": a noun or a report
+    if word not in ("without", "even", "regardless", "no", "in", "instead", "take", "takes"):
+        before = _DETERMINER_BEFORE.search(s, max(0, a - 30), a)
+        if before is not None:
+            return False  # "an override", "per-directory overrides"
     targets = list(_TARGET_WORD.finditer(s, cue.end(), b))
     if not targets:
         return True  # a target outside this list ("set aside everything above")
@@ -236,9 +192,9 @@ def override_governs(s: str, a: int, b: int) -> bool:
         return False  # "without asking is that consent": cue and target in two clauses
     if (t.start() > 0 and s[t.start() - 1] in "`_-") or s[t.end() : t.end() + 1] in ("=", "`", "_"):
         return False  # "`confirm=true`": a parameter, not an approval
-    word = t.group().lower()
-    verb_form = word.endswith("s") and not word.endswith(("ss", "us", "is"))
-    return not (verb_form and _TARGET_AS_VERB.match(s, t.end()))  # a target used as a verb
+    # "the design rules out": the target word is a verb
+    as_verb = t.group().lower() in ("rules", "orders", "requests")
+    return not (as_verb and _TARGET_AS_VERB.match(s, t.end()))
 
 
 _ITEM_PRONOUN = re.compile(r"\b(?:it|them)\b", _I)

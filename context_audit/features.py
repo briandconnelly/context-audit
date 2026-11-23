@@ -1724,14 +1724,7 @@ def _others(s: str, act_starts: list[int] = []) -> list[_Raw]:  # noqa: B006
     if _ANCHOR["solicit"].search(s):
         out.extend(("solicit", m.start(), m.end(), False, None) for m in _SOLICIT.finditer(s))
     if _ANCHOR["override"].search(s) and _OVERRIDE_TARGET_STEM.search(s):
-        pos = 0
-        while (m := _OVERRIDE.search(s, pos)) is not None:
-            if not scope.override_governs(s, m.start(), m.end()):
-                # A cue that is not a verb ("System override: previous instructions are
-                # void"): a later override may start inside the rejected span.
-                pos = m.start() + 1
-                continue
-            pos = m.end()
+        for m in _OVERRIDE.finditer(s):
             if not _negated(s, m.start(), 0):
                 out.append(("override", m.start(), m.end(), cond(m), None))
         for m in _OVERRIDE_POSTPOSED.finditer(s):
