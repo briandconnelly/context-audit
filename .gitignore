@@ -4,3 +4,5 @@ runs/
 .superpowers/
 .pytest_cache/
 .ruff_cache/
+.envrc
+.env
