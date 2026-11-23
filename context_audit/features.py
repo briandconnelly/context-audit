@@ -70,7 +70,7 @@ _ACT_VERBS = (
     "|deploy|release|promote|roll\\s+back|rollback|migrate|rebuild|build|compile|install"
     "|uninstall|apply|schedule|create|open|save|store|log|record|back\\s+up|restore|free"
     # perform and inspect
-    "|run|execute|invoke|trigger|call|use|fetch|get|load|retry|continue|proceed|start"
+    "|run|execute|invoke|trigger|call|use|fetch|retrieve|get|load|bring\\s+up|retry|continue|proceed|start"
     "|check|verify|confirm|review|list|summari[sz]e|narrow|slow|collect|connect|join|sign"
     "|visit|navigate|browse|click|ask|contact|lock|unlock|transfer"
     # a few translated imperatives, for the translated concealment and override phrases
@@ -137,13 +137,22 @@ _NEG_OPEN = (
     rf"(?:do\s+not|don{_A}?t|never|not|without|no\s+need\s+to|nor|avoid|refrain\s+from"
     rf"|stop|make\s+sure\s+not\s+to|be\s+careful\s+not\s+to|take\s+care\s+not\s+to)"
 )
-# Reveal verbs taking the thing revealed: "mention X to the user", "mention X in your reply".
-_REVEAL_THING = (
-    r"(?:mention|mentioning|disclose|disclosing|surface|surfacing|reveal|revealing|report"
-    r"|reporting|show|showing|display|displaying|share|sharing|include|including|say"
-    r"|saying|explain|explaining|acknowledge|acknowledging|note|noting|bring\s+(?:this|that"
-    r"|it|these)\s+up|bringing\s+(?:this|that|it)\s+up|let\s+on|letting\s+on|talk\s+about"
-    r"|talking\s+about|write\s+about|writing\s+about|refer\s+to|referring\s+to)"
+# Concealment verbs split into two classes (controller ruling, round 2).
+# Communication verbs are about what the user is told: negating one conceals anything
+# except a plain data noun.
+_COMM_THING = (
+    r"(?:mention|mentioning|disclose|disclosing|say|saying|explain|explaining|acknowledge"
+    r"|acknowledging|discuss|discussing|announce|announcing|raise|raising|flag|flagging"
+    r"|report|reporting|bring\s+(?:this|that|it|these)\s+up|bringing\s+(?:this|that|it)\s+up"
+    r"|bring\s+up|bringing\s+up|let\s+on|letting\s+on|talk\s+about|talking\s+about"
+    r"|write\s+about|writing\s+about|refer\s+to|referring\s+to)"
+)
+# Presentation verbs are about what data is displayed: negating one conceals only an
+# explicit action object.
+_PRESENT_THING = (
+    r"(?:show|showing|display|displaying|print|printing|output|outputting|include|including"
+    r"|expose|exposing|reveal|revealing|render|rendering|log|logging|echo|echoing|surface"
+    r"|surfacing|list|listing|quote|quoting|paste|pasting|share|sharing)"
 )
 # Reveal verbs taking the user: "tell the user", "let the user know".
 _REVEAL_WHO_VERB = (
@@ -156,8 +165,13 @@ _AWARE = (
     r"|be\s+informed|be\s+notified|hear|hears|suspect|suspects|see|sees|catch\s+on)"
 )
 _REVEAL_OBJ = re.compile(
-    rf"\b{_NEG_OPEN}\s+(?:ever\s+)?{_REVEAL_THING}\b(?P<obj>[^.;:]{{0,50}}?)\s*"
-    rf"\b(?:to|with|in|on\s+to|for)?\s*(?:{_WHO}|{_PLACE})(?=(?P<tail>[^.;:,\x22\x60\u201d]{{0,40}}))",
+    rf"\b{_NEG_OPEN}\s+(?:ever\s+)?(?:(?P<comm>{_COMM_THING})|{_PRESENT_THING})\b(?P<obj>[^.;:]{{0,40}}?)\s*"
+    rf"\b(?:to|with|in|on\s+to|for)\s+(?:{_WHO}|{_PLACE})(?=(?P<tail>[^.;:,\x22\x60\u201d]{{0,40}}))",
+    _I,
+)
+# A communication verb with no addressee: only an agent-relative object counts.
+_REVEAL_BARE = re.compile(
+    rf"\b{_NEG_OPEN}\s+(?:ever\s+)?{_COMM_THING}\b(?P<obj>[^.;:]{{0,40}}?\byou\s+[a-z]{{2,}})",
     _I,
 )
 _REVEAL_WHO = re.compile(
@@ -216,10 +230,84 @@ _SILENT = re.compile(
 
 # The object of a concealment: an action or the exchange, not data.
 _WORD = re.compile(r"[a-z][a-z'’-]*")
-_CLAUSE_OBJ = re.compile(
-    r"^\s*(?:about\s+|of\s+)?(?:that|what|how|when|where|whether|why)\b"
-    r"|\byou\s+(?:did|have|had|just|will|are|were|\w{2,}ed)\b",
+_CLAUSE_OBJ = re.compile(r"^\s*(?:about\s+|of\s+)?(?:that|what|how|when|where|whether|why)\b", _I)
+# An agent relative clause: "the ping that you sent", "the payment you made".
+_AGENT_REL = re.compile(
+    r"\b(?:that|which|what)\s+you\b"
+    r"|\byou\s+(?:just\s+|have\s+|had\s+|already\s+)?"
+    r"(?!are\b|were\b|will\b|can\b|may\b|should\b|must\b|would\b|could\b|to\b)[a-z]{2,}",
     _I,
+)
+# Plain data nouns: withholding these is not concealment, even after a communication verb.
+_DATA_NOUNS = frozenset(
+    [
+        "token",
+        "tokens",
+        "key",
+        "keys",
+        "secret",
+        "secrets",
+        "password",
+        "passwords",
+        "passphrase",
+        "credential",
+        "credentials",
+        "codename",
+        "codenames",
+        "name",
+        "names",
+        "address",
+        "addresses",
+        "hostname",
+        "hostnames",
+        "url",
+        "urls",
+        "id",
+        "ids",
+        "identifier",
+        "identifiers",
+        "number",
+        "numbers",
+        "value",
+        "values",
+        "field",
+        "fields",
+        "config",
+        "configuration",
+        "details",
+        "detail",
+        "data",
+        "json",
+        "payload",
+        "trace",
+        "traces",
+        "log",
+        "logs",
+        "file",
+        "files",
+        "path",
+        "paths",
+        "contents",
+        "content",
+        "body",
+        "price",
+        "prices",
+        "cost",
+        "costs",
+        "salary",
+        "balance",
+        "phone",
+        "ssn",
+        "birthday",
+        "location",
+        "ip",
+        "email",
+        "emails",
+        "code",
+        "codes",
+        "hash",
+        "signature",
+    ]
 )
 _FUNCTION_WORDS = frozenset(
     [
@@ -459,15 +547,16 @@ _TAIL_OBJ = re.compile(r"^\s*(?:about|of|regarding|on)\s+(?P<obj>.*)$", _I | re.
 
 def _tail_kind(tail: str) -> str:
     """Kind of what follows "tell the user ...": an about-object, a clause, or nothing."""
-    if _CLAUSE_OBJ.search(tail):
+    if _CLAUSE_OBJ.search(tail) or _AGENT_REL.search(tail):
         return "action"
     m = _TAIL_OBJ.match(tail)
     return _object_kind(m.group("obj")) if m else "pronoun"
 
 
 def _object_kind(obj: str) -> str:
-    """'action', 'data', or 'pronoun' (no head noun of its own: needs a referent)."""
-    if _CLAUSE_OBJ.search(obj):
+    """'action' (event noun, gerund, clause, or agent relative clause), 'pronoun' (no
+    head noun of its own), 'data' (a plain data noun), or 'plain' (any other noun)."""
+    if _CLAUSE_OBJ.search(obj) or _AGENT_REL.search(obj):
         return "action"
     words = _WORD.findall(obj.lower())
     head: list[str] = []
@@ -475,10 +564,12 @@ def _object_kind(obj: str) -> str:
         if w in _PREPOSITIONS and head:
             break  # "the exchange with the review bot": the head is "exchange"
         if w not in _FUNCTION_WORDS:
-            head.append(w)
+            head.append(w.strip("'’-"))
     if not head:
         return "pronoun"
-    return "action" if _event_word(head[-1].strip("'’-")) else "data"
+    if _event_word(head[-1]) or (head[0].endswith("ing") and _event_word(head[0])):
+        return "action"
+    return "data" if head[-1] in _DATA_NOUNS else "plain"
 
 
 # --- audience: addressing the agent as separate from the user ------------------------
@@ -514,8 +605,11 @@ _SECRET_OF_AGENT = (
     r"|passwords?|secrets|environment\s+variables|env\s+vars|ssh\s+keys?)"
 )
 _SOLICIT = re.compile(
-    r"\b(?:which|what)\s+(?:ai\s+|language\s+|llm\s+|underlying\s+)?(?:model|llm|harness"
-    r"|agent|assistant)s?\b[^.;?]{0,25}?\b(?:you|your)\b"
+    r"\b(?:which|what)\s+(?:ai\s+|language\s+|llm\s+|underlying\s+)?(?:model|llm|ai|harness"
+    r"|agent|assistant)(?:\s+and\s+(?:version|harness|provider|model))?\s+"
+    rf"(?:are\s+you|you\s+are|you{_A}re|powers\s+you|runs\s+you|backs\s+you"
+    r"|is\s+(?:powering|running|behind|backing)\s+you)\b"
+    r"|\b(?:identify|state|report|disclose|name|confirm|reveal|tell\s+us)\s+your\s+(?:model|llm)\b"
     rf"|\bmodel\s+(?:you\s+are|you{_A}re)\b"
     r"|\byour\s+(?:model|llm)\s+(?:name|version|provider|id|family|identity)\b"
     rf"|\b(?:are\s+you|you\s+are|you{_A}re)\s+(?:running\s+(?:on|in|as)|powered\s+by"
@@ -533,6 +627,7 @@ _OVR_TARGET = (
     r"|constraints?|restrictions?|system\s+prompt|prompts?|requests?|approvals?|confirmations?"
     rf"|what\s+(?:you\s+were|you{_A}ve\s+been|you\s+have\s+been)\s+told"
     r"|what\s+(?:the\s+user|they)\s+(?:said|asked|told\s+you)|everything\s+(?:above|before|else)"
+    r"|(?:whatever|anything)\s+[^.;]{0,30}?\btold\s+you"
     r"|anweisungen|instrucciones|consignes|instru[çc][õo]es|regeln|reglas)"
 )
 _OVR_STATE = (
@@ -586,7 +681,8 @@ _ANCHOR = {
         r"\b(?:user|human|person|people|maintainer|owner|operator|customer|requester|repl"
         r"|respons|answer|summar|output|message|conversation|chat|transcript|report|silent"
         r"|quiet|secret|covert|discreet|confidential|private|hidden|hush|wraps|yourself|us\b"
-        r"|record|behind|unannounced|usuario|usu[áa]rio|utilisateur|benutzer|nutzer|anwender)",
+        r"|record|behind|unannounced|mention|tell|disclos|announc|bring|let|talk|explain|discuss"
+        r"|raise|flag|refer|acknowledg|usuario|usu[áa]rio|utilisateur|benutzer|nutzer|anwender)",
         _I,
     ),
     "audience": re.compile(r"\b(?:only|not|rather|instead|never|cannot)\b|n['’]t\b", _I),
@@ -676,39 +772,55 @@ def _directives(s: str, own_tool: str | None) -> tuple[list[_Raw], bool]:
 
 
 def _conceal(s: str, has_referent: bool, directive_here: bool) -> list[_Raw]:
-    """conceal-act matches in sentence s. A pronoun object needs a referent: an act or
-    call in this or the previous sentence, or a preceding sibling block."""
+    """conceal-act matches in sentence s.
+
+    Communication verbs (tell, mention, the awareness verbs) conceal anything but a plain
+    data noun. Presentation verbs and keep/hide forms conceal only an action object, or a
+    pronoun whose referent is an act or call in this or the previous sentence.
+    """
     out: list[_Raw] = []
 
-    def accept(kind: str) -> bool:
+    def told(kind: str) -> bool:
+        return kind != "data"
+
+    def shown(kind: str) -> bool:
         return kind == "action" or (kind == "pronoun" and has_referent)
+
+    def add(m: re.Match[str]) -> None:
+        out.append(("conceal-act", m.start(), m.end(), False, None))
 
     for m in _REVEAL_OBJ.finditer(s):
         obj = m.group("obj")
         kind = _object_kind(obj) if obj.strip() else _tail_kind(m.group("tail"))
-        if accept(kind):
-            out.append(("conceal-act", m.start(), m.end(), False, None))
+        if (told if m.group("comm") else shown)(kind):
+            add(m)
+    if not out:
+        for m in _REVEAL_BARE.finditer(s):
+            if _AGENT_REL.search(m.group("obj")):
+                add(m)
     for m in _REVEAL_WHO.finditer(s):
-        if accept(_tail_kind(m.group("tail"))):
-            out.append(("conceal-act", m.start(), m.end(), False, None))
+        if told(_tail_kind(m.group("tail"))):
+            add(m)
     for m in _UNAWARE.finditer(s):
-        tail = m.group("tail") or m.group("tail2") or ""
-        if accept(_tail_kind(tail)):
-            out.append(("conceal-act", m.start(), m.end(), False, None))
-    for pat in (_KEEP_FROM, _KEEP_SECRET):
-        for m in pat.finditer(s):
-            obj = m.group("obj")
-            if _WORD.findall(obj.lower())[-1:] in (["the"], ["a"], ["an"], ["your"], ["our"]):
-                continue  # "keep the secret ...": the adjective is the object's own noun
-            if not _negated(s, m.start(), 0) and accept(_object_kind(obj)):
-                out.append(("conceal-act", m.start(), m.end(), False, None))
-    out.extend(
-        ("conceal-act", m.start(), m.end(), False, None) for m in _CONCEAL_TRANSLATED.finditer(s)
-    )
+        if told(_tail_kind(m.group("tail") or m.group("tail2") or "")):
+            add(m)
+    for m in _KEEP_FROM.finditer(s):
+        if not _negated(s, m.start(), 0) and shown(_object_kind(m.group("obj"))):
+            add(m)
+    for m in _KEEP_SECRET.finditer(s):
+        obj = m.group("obj")
+        if _WORD.findall(obj.lower())[-1:] in (["the"], ["a"], ["an"], ["your"], ["our"]):
+            continue  # "keep the secret ...": the adjective is the object's own noun
+        kind = _object_kind(obj)
+        # "keep this quiet", "keep that between us": refers to what was just done or said
+        if not _negated(s, m.start(), 0) and kind in ("action", "pronoun"):
+            add(m)
+    for m in _CONCEAL_TRANSLATED.finditer(s):
+        add(m)
     if directive_here:
         for m in _SILENT.finditer(s):
             if not _negated(s, m.start(), 0):
-                out.append(("conceal-act", m.start(), m.end(), False, None))
+                add(m)
     return out
 
 
@@ -769,9 +881,7 @@ def detect(
         raw, directive = _directives(s, own_tool)
         add(raw, lo, idx)
         if _ANCHOR["conceal"].search(s):
-            # The first sentence of a field may refer back to a preceding sibling block.
-            referent = directive or prev_directive or idx == 0
-            add(_conceal(s, referent, directive), lo, idx)
+            add(_conceal(s, directive or prev_directive, directive), lo, idx)
         add(_others(s), lo, idx)
         prev_directive = directive
 
