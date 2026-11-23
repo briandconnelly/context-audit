@@ -1,0 +1,136 @@
+{
+ "header": {
+  "claude_version": "2.1.330",
+  "date": "2026-11-22",
+  "platform": "Darwin arm64",
+  "python": "3.15.0"
+ },
+ "results": [
+  {
+   "name": "routing",
+   "claim": "Claude Code can be routed to a loopback stub in place of the model endpoint",
+   "outcome": "shown",
+   "reason": "2 requests, every model request with the synthetic key; managed settings file absent"
+  },
+  {
+   "name": "result-text",
+   "claim": "The result hook receives the complete text of each result shape",
+   "outcome": "shown",
+   "reason": "PostToolUse input held all 2 markers"
+  },
+  {
+   "name": "result-structured",
+   "claim": "The result hook receives the complete text of each result shape",
+   "outcome": "shown",
+   "reason": "PostToolUse input held all 1 markers"
+  },
+  {
+   "name": "result-split",
+   "claim": "The result hook receives the complete text of each result shape",
+   "outcome": "shown",
+   "reason": "PostToolUse input held all 2 markers"
+  },
+  {
+   "name": "result-big",
+   "claim": "The result hook receives the complete text of each result shape",
+   "outcome": "shown",
+   "reason": "hook input held both ends of a 200,000 character result; next model request has head=True tail=False"
+  },
+  {
+   "name": "error-tool",
+   "claim": "The failure hook receives error content",
+   "outcome": "shown",
+   "reason": "error text seen in ['PostToolUseFailure']"
+  },
+  {
+   "name": "error-protocol",
+   "claim": "The failure hook receives error content",
+   "outcome": "shown",
+   "reason": "error text seen in ['PostToolUseFailure']"
+  },
+  {
+   "name": "parallel",
+   "claim": "The result hook receives the complete text of each result shape",
+   "outcome": "shown",
+   "reason": "one complete record per parallel call (1 and 1 PostToolUse records)"
+  },
+  {
+   "name": "competing-hook",
+   "claim": "The result hook receives the complete text of each result shape",
+   "outcome": "shown",
+   "reason": "hooks that saw the result: {'a': True, 'b': True}"
+  },
+  {
+   "name": "metadata",
+   "claim": "Any inspected hook event carries tool descriptions or server instructions",
+   "outcome": "not_shown",
+   "reason": "reached the model: {'instructions': True, 'tool description': True, 'parameter description': True}; hook events carrying each: {'instructions': [], 'tool description': [], 'parameter description': []}; inspected: ['MessageDisplay', 'PostToolBatch', 'PostToolUse', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'UserPromptSubmit']"
+  },
+  {
+   "name": "transcript",
+   "claim": "The transcript holds tool results that can be read back by tool-use ID",
+   "outcome": "shown",
+   "reason": "the transcript line for the tool-use ID holds the result text"
+  },
+  {
+   "name": "resume",
+   "claim": "The result hook receives the complete text of each result shape",
+   "outcome": "shown",
+   "reason": "the hook ran in the resumed session; session ids seen: 1"
+  },
+  {
+   "name": "replace-text",
+   "claim": "Replacing a result keeps the original out of the next request",
+   "outcome": "shown",
+   "reason": "the next request has the replacement and the sibling, and not the original"
+  },
+  {
+   "name": "replace-with-competing-hook",
+   "claim": "Replacing a result keeps the original out of the next request",
+   "outcome": "shown",
+   "reason": "the next request has the replacement and the sibling, and not the original; the second hook saw original=True replacement=False"
+  },
+  {
+   "name": "direct-message",
+   "claim": "A hook message appears on the owner's terminal without passing through the model",
+   "outcome": "shown",
+   "reason": "the hook message is on screen and in no request to the model"
+  },
+  {
+   "name": "ask-baseline",
+   "claim": "A gate's ask reaches the owner before the call runs",
+   "outcome": "shown",
+   "reason": "with no hook, the pre-allowed tool ran with no permission prompt"
+  },
+  {
+   "name": "ask-accept",
+   "claim": "A gate's ask reaches the owner before the call runs",
+   "outcome": "shown",
+   "reason": "prompts answered: 1; calls that ran: 1; hook reason shown in the prompt: True"
+  },
+  {
+   "name": "ask-decline",
+   "claim": "A gate's ask reaches the owner before the call runs",
+   "outcome": "shown",
+   "reason": "prompts answered: 1; calls that ran: 0; hook reason shown in the prompt: True"
+  },
+  {
+   "name": "ask-dismiss",
+   "claim": "A gate's ask reaches the owner before the call runs",
+   "outcome": "shown",
+   "reason": "prompts answered: 1; calls that ran: 0; hook reason shown in the prompt: True"
+  },
+  {
+   "name": "ask-retry",
+   "claim": "A gate's ask reaches the owner before the call runs",
+   "outcome": "shown",
+   "reason": "prompts answered: 2; calls that ran: 1; hook reason shown in the prompt: True"
+  },
+  {
+   "name": "ask-dont-ask-again",
+   "claim": "A gate's ask reaches the owner before the call runs",
+   "outcome": "shown",
+   "reason": "the hook's ask prompted again after 'don't ask again'; second prompt appeared: True; calls that ran: 2"
+  }
+ ]
+}
