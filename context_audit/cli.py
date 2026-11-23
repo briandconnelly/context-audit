@@ -348,7 +348,7 @@ def _tool_call(entries: list[dict], tool_use_id: str) -> tuple[str | None, list]
             if b.get("type") == "tool_result" and b.get("tool_use_id") == tool_use_id:
                 payloads.append(entry.get("toolUseResult"))
                 payloads.append(b.get("content"))
-    return name, [p for p in payloads if isinstance(p, (str, list))]
+    return name, [p for p in payloads if isinstance(p, (str, list, dict))]
 
 
 def _servers(tool: str, source_id: str) -> str | None:
@@ -382,7 +382,7 @@ def _show_tool(record: dict, fid: str, root: Path) -> None:
             event["tool_response"] = payload
         elif isinstance(payload, str):
             event["error"] = payload
-        elif len(payload) == 1 and isinstance(payload[0], dict):
+        elif isinstance(payload, list) and len(payload) == 1 and isinstance(payload[0], dict):
             event["error"] = payload[0].get("text")
         ing = from_hook_event(event)
         result = scan_fields(ing.fields, state_root=root, own_tool=ing.tool)

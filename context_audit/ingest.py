@@ -183,6 +183,10 @@ def from_hook_event(event: dict, budget: Budget = _DEFAULT_BUDGET) -> Ingested:
                     text, locator = resource.get("text"), f"content[{i}].resource.text"
                 if isinstance(text, str):
                     c.text(locator, text, i, locator)
+        elif isinstance(response, dict):
+            # Structured content handed over already parsed: walked like parsed JSON.
+            c.chars = len(json.dumps(response, ensure_ascii=False, default=str))
+            c._walk(response, "response", 0)
         else:
             return undecodable()
     else:

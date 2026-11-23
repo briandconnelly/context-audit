@@ -96,7 +96,9 @@ def test_failure_event_uses_error():
 
 
 def test_unknown_shape_is_not_scanned():
-    for response in (7, None, {"x": {"y": 1}}):
+    # Task 8 ruling disagreement (final fix wave): a dict response is now scanned as
+    # structured content (see test_dict_response_is_scanned_as_structured_content).
+    for response in (7, None):
         r = from_hook_event(post(response))
         assert (r.fields, r.outcome, r.reason) == ([], "not_scanned", "undecodable")
     for ev in ({}, [], "x", {"hook_event_name": "Stop"}):
@@ -233,3 +235,13 @@ def test_block_loop_stops_when_the_collector_is_full(monkeypatch):
     ing = from_hook_event(post(blocks), Budget(max_fields=3))
     assert (ing.outcome, ing.reason) == ("partial", "field-budget")
     assert len(parsed) <= 4
+
+
+def test_dict_response_is_scanned_as_structured_content(tmp_path):
+    # Task 8 / Minor 3: a dict-shaped tool_response is walked like parsed JSON, not dropped.
+    r = from_hook_event(post({"x": {"y": 1}}))
+    assert (r.fields, r.outcome) == ([], "complete")
+    ing = from_hook_event(post({"result": {"note": D}}))
+    assert ing.outcome == "complete"
+    assert [f.locator for f in ing.fields] == ["response$.#0.#0"]
+    assert _high(ing, tmp_path)
