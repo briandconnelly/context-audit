@@ -142,7 +142,6 @@ CORPUS_XFAIL: dict[str, str] = {
     "pos-018": "detector: text.fenced treats a JSON string value as a quotation, so all quoted",
     "ctl-011": "detector: false act on 'commit 4be1c0d' in git log output",
     "ctl-082": "detector: conditioned 'skip the second review' is not matched as override",
-    "ctl-086": "detector: 'when you call `delete_file`' yields no match at all",
 }
 
 

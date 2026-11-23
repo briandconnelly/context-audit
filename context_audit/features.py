@@ -15,10 +15,13 @@ from __future__ import annotations
 
 import re
 import time
-from bisect import bisect_left, bisect_right
+from bisect import bisect_left, bisect_right, insort
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
 from context_audit import lexicon as lx
+from context_audit import proximity
+from context_audit.form import imperative_head
 from context_audit.lexicon import alt
 from context_audit.text import Field, Normalized, fenced, line_breaks, record_lines, sentences
 
@@ -104,18 +107,34 @@ _CONCEAL_ADV = (
     r"(?:silently|quietly|secretly|discreetly|covertly|stealthily|privately|surreptitiously"
     r"|unannounced|in\s+secret|in\s+the\s+background|behind\s+the\s+scenes)"
 )
-_ACT = re.compile(
-    _OPENER + rf"[\s\-*•>\d.)\"'`“{_SYMBOL}]{{0,6}}"
+_HEAD_PREFIX = (
+    rf"[\s\-*•>\d.)\"'`“{_SYMBOL}]{{0,6}}"
     r"(?:(?:also|now|then|please|kindly|first|just|always|immediately|simply"
     rf"|{_CONCEAL_ADV})\s+)?"
+)
+_KNOWN_HEAD = (
     rf"\b(?P<verb>{_ACT_VERBS})\b"
     r"(?![-:/_@\"”'`])(?!\.\S)"
     r"(?!\s+(?:finished|failed|passed|ran|took|queued|pending|broke|staged|complete|completed|succeeded|saved|ready|started|done"
     r"|is|was|are|were|has|had|limits?|of|ids?|count|status|history|not|found)\b)"
     r"(?!\s+#\d)"
-    r"(?=(?P<after>\s+\w{1,10})?)",
+    r"(?=(?P<after>\s+\w{1,10})?)"
+)
+# Any word in the same position: an open-class imperative, judged by
+# `form.imperative_head` (Task 16b). The verb list stays the strong signal; one pass
+# serves both, the list tried first.
+_OPEN_HEAD = r"\b(?P<open>[A-Za-z][a-z]+(?:-[a-z]+)?)\b(?![-:/_@.'’])"
+_ACT = re.compile(_OPENER + _HEAD_PREFIX + f"(?:{_KNOWN_HEAD}|{_OPEN_HEAD})", _I)
+# The same with only word openers, tried where a rejected open head stands: "You must
+# offboard ...", ", then defund ..." (the rejected head is itself an opener).
+_ACT_AT = re.compile(
+    _OPENER.replace("(?P<opener>^|", "(?P<opener>", 1)
+    + _HEAD_PREFIX
+    + f"(?:{_KNOWN_HEAD}|{_OPEN_HEAD})",
     _I,
 )
+# Openers at which a capitalised word is still a sentence start.
+_SENTENCE_OPENERS = frozenset({"", "\n", ".", "!", "?", ":"})
 # A verb-class word that is a noun heading the subject of a finite verb is not an imperative:
 # "Update checks run nightly.", "Delete operations are logged.", "Sync job runs nightly."
 _FINITE_AUX = "is|are|was|were|has|have|had|will|would|can|could|may|might|must|should|do|does|did"
@@ -391,13 +410,6 @@ _PASSIVE_TOLD = re.compile(
     rf"\b(?:{_MODAL}\s+(?:not|never)|(?:must|should){_A}?n{_A}t)\s+(?:ever\s+)?be\s+"
     rf"(?:(?P<comm>{alt(lx.TOLD_PARTICIPLES)})|{alt(lx.SHOWN_PARTICIPLES)})"
     rf"\s+(?:to|in|with)\s+(?:{_WHO}|{_PLACE})",
-    _I,
-)
-# "with no disclosure of that entry to the user", "without any notification to the user".
-_NOMINAL_TELL = re.compile(
-    rf"\b(?:with\s+no|without(?:\s+any)?)\s+(?:{alt(lx.TELLING_NOUNS)})\b"
-    r"(?:\s+(?:of|about|regarding)\s+(?P<obj>[^.;:]{0,40}?))?"
-    rf"\s+(?:to|in|for|with)\s+(?:{_WHO}|{_PLACE})",
     _I,
 )
 # "keep the user unaware of the entry", "the user must remain in the dark".
@@ -961,26 +973,80 @@ def _after_subject(s: str, opener: int) -> bool:
     return m is not None and m.group(1).lower() not in _IMPERATIVE_LEAD
 
 
-def _directives(s: str, own_tool: str | None) -> tuple[list[_Raw], list[int]]:
+# Openers that grant permission rather than direct ("You may mention this ..."): they
+# stay openers for the verb list, not for the open class.
+_PERMISSIVE = re.compile(r"you\s+(?:can|may)$", _I)
+# First words of the word openers: only a rejected head among them is retried.
+_OPENER_WORDS = frozenset(
+    re.findall(
+        r"[a-z]+",
+        "and et und then also now first next please kindly afterwards instead so or"
+        " just immediately always simply you be make remember don do i we go the an a it",
+    )
+) | frozenset(lx.AGENT_NOUNS)
+# A number, as opposed to a list marker ("1. ", "2) "), between the opener and the word.
+_NUMBER = re.compile(r"\d[.,]?\d|\d\s")
+
+
+def _act_heads(s: str) -> Iterator[re.Match[str]]:
+    """Imperative heads in s: a listed verb (group `verb`), or an open-class word (group
+    `open`) that passes `form.imperative_head`. A rejected open head that is itself an
+    opener ("You must ...") is retried as the opener of the next word."""
+    pos = 0
+    while (m := _ACT.search(s, pos)) is not None:
+        pos = m.end()
+        while m is not None:
+            if m.group("verb") is not None:
+                yield m
+                break
+            v, end = m.start("open"), m.end("open")
+            opener = m.group("opener")
+            sentence_start = opener.lower() in _SENTENCE_OPENERS
+            if opener == "." and m.end("opener") < len(s) and not s[m.end("opener")].isspace():
+                pass  # a decimal point or a dotted name, not a sentence end
+            elif _PERMISSIVE.match(opener) or _NUMBER.search(s, m.end("opener"), v):
+                pass  # permission, or a number before the word ("4.6 average from ...")
+            elif imperative_head(s, v, end, sentence_start, strict=opener in ',("“`]'):
+                yield m
+                break
+            if s[v:end].lower() not in _OPENER_WORDS:
+                break
+            m = _ACT_AT.match(s, v)
+            if m is not None:
+                pos = max(pos, m.end())
+
+
+def _directives(
+    s: str, own_tool: str | None, fragment: Callable[[int], bool] | None = None
+) -> tuple[list[_Raw], list[int]]:
     """act and call matches in sentence s (sentence-relative), and the start of every act
-    and call found, including those absorbed into a call or naming the field's own tool."""
+    and call found, including those absorbed into a call or naming the field's own tool.
+
+    `fragment(pos)` says whether the word at pos begins right after removed characters
+    (a control or escape sequence): the rest of a word, not a word, so it is not taken as
+    an open-class imperative."""
 
     def neg(start: int) -> bool:
         return _negated(s, start, 0)
 
     acts: list[tuple[int, int]] = []
-    for m in _ACT.finditer(s):
-        v = m.start("verb")
-        after = (m.group("after") or "").strip().lower()
-        if after in _ACT_IDIOM.get(m.group("verb").lower(), ()):
+    for m in _act_heads(s):
+        known = m.group("verb") is not None
+        head = "verb" if known else "open"
+        v, word = m.start(head), m.group(head)
+        if not known and fragment is not None and fragment(v):
             continue
-        if _heads_a_subject(s, m.group("verb"), m.end("verb")):
+        after = (m.group("after") or "").strip().lower()
+        if known and after in _ACT_IDIOM.get(word.lower(), ()):
+            continue
+        if _heads_a_subject(s, word, m.end(head)):
             continue
         opener = m.group("opener").lower()
         if opener in _ADVERB_OPENERS and _after_subject(s, m.start("opener")):
             continue
         if not neg(v):
             acts.append((v, _clause(s, v, 0, len(s))[1]))
+    acts.sort()
     act_starts = [a for a, _ in acts]
 
     calls: list[tuple[int, int, str]] = []
@@ -1082,13 +1148,15 @@ def _conceal(s: str, has_referent: bool, directives: list[int]) -> list[_Raw]:
         return kind == "action" or (kind == "pronoun" and has_referent)
 
     def add(m: re.Match[str]) -> None:
-        start = m.start()
+        add_span(m.start(), m.end())
+
+    def add_span(start: int, end: int) -> None:
         if _GERUND_MANNER.match(s, start):
             if not (proverb or _modifies_directive(s, start, directives)):
                 return
         elif _reported(s, start):
             return
-        out.append(("conceal-act", start, m.end(), False, None))
+        out.append(("conceal-act", start, end, False, None))
 
     for m in _REVEAL_OBJ.finditer(s):
         obj = m.group("obj")
@@ -1134,15 +1202,10 @@ def _conceal(s: str, has_referent: bool, directives: list[int]) -> list[_Raw]:
         kind = _subject_kind(s, m.start(), has_referent)
         if (told if m.group("comm") else shown)(kind):
             out.append(("conceal-act", _clause(s, m.start(), 0, len(s))[0], m.end(), False, None))
-    for m in _NOMINAL_TELL.finditer(s):
-        obj = m.group("obj")
-        if told(_object_kind(obj) if obj else "pronoun") and (
-            proverb or _modifies_directive(s, m.start(), directives)
-        ):
-            out.append(("conceal-act", m.start(), m.end(), False, None))
     for m in _KEEP_UNAWARE.finditer(s):
         if not _negated(s, m.start(), 0) and told(_tail_kind(m.group("tail"))):
             out.append(("conceal-act", m.start(), m.end(), False, None))
+    _conceal_by_proximity(s, has_referent, directives, proverb, out, add_span)
     if directives or proverb:
         for m in _SILENT.finditer(s):
             if not _negated(s, m.start(), 0) and (
@@ -1150,6 +1213,57 @@ def _conceal(s: str, has_referent: bool, directives: list[int]) -> list[_Raw]:
             ):
                 out.append(("conceal-act", m.start(), m.end(), False, None))
     return out
+
+
+_MANNER_CUE = re.compile(r"(?:without|with\s+no)\b", _I)
+
+
+def _overlaps(spans: list[tuple[int, int]], start: int, end: int) -> bool:
+    """Whether [start, end) overlaps a span in `spans` (sorted, non-nested in practice)."""
+    k = bisect_left(spans, (start, start))
+    if k > 0 and spans[k - 1][1] > start:
+        return True
+    return k < len(spans) and spans[k][0] < end
+
+
+def _data_only(words: list[str]) -> bool:
+    """Whether the words name a plain datum and no action: withholding data is not
+    concealment, and keeps precedence over the proximity rule."""
+    return any(w in _DATA_NOUNS for w in words) and not any(_event_word(w) for w in words)
+
+
+def _conceal_by_proximity(
+    s: str,
+    has_referent: bool,
+    directives: list[int],
+    proverb: bool,
+    out: list[_Raw],
+    add_span,
+) -> None:
+    """Concealment by cue proximity (`proximity.conceal_candidates`), under the same
+    precedence as the enumerated frames: negation, reports, withholding data, and a
+    manner phrase only on a directive."""
+    taken = sorted((a, b) for _, a, b, _, _ in out)
+    for c in proximity.conceal_candidates(s):
+        if _overlaps(taken, c.start, c.end):
+            continue
+        words = [w.strip("'’-") for w in _WORD.findall(c.scope.lower())]
+        if _data_only(words) or _object_kind(c.scope) == "data":
+            continue
+        if c.strong and _negated(s, c.start, 0):
+            continue
+        if not c.told:
+            kind = _object_kind(c.obj)
+            if not (kind == "action" or (kind == "pronoun" and has_referent)):
+                continue
+        if _MANNER_CUE.match(s, c.start) and not (
+            proverb or _modifies_directive(s, c.start, directives)
+        ):
+            continue
+        before = len(out)
+        add_span(c.start, c.end)
+        for _, a, b, _, _ in out[before:]:
+            insort(taken, (a, b))
 
 
 def _others(s: str) -> list[_Raw]:
@@ -1169,6 +1283,14 @@ def _others(s: str) -> list[_Raw]:
                 out.append(("override", m.start(), m.end(), conditioned, None))
         for m in _OVERRIDE_NEGATIVE_FORM.finditer(s):
             out.append(("override", m.start(), m.end(), conditioned, None))
+    taken = sorted((a, b) for f, a, b, _, _ in out if f == "override")
+    for a, b in proximity.override_candidates(s):
+        if _overlaps(taken, a, b):
+            continue
+        if _negated(s, a, 0) or _reported(s, a):
+            continue
+        insort(taken, (a, b))
+        out.append(("override", a, b, _APPROVAL_CONDITION.search(s) is not None, None))
     return out
 
 
@@ -1354,13 +1476,19 @@ def detect(
             quoted = _inside(quotes, qstarts, a)
             result.append(Match(feature, a, lo + end, idx, quoted, conditioned, tool, record))
 
+    def fragment(pos: int) -> bool:
+        if pos == 0 or pos >= len(n.origin):
+            return False
+        gap = n.source[n.origin[pos - 1] + 1 : n.origin[pos]]
+        return bool(gap) and not gap.isspace()
+
     prev_directive = False
     for idx, (lo, hi) in enumerate(sents):
         if deadline is not None and time.monotonic() > deadline:
             result.complete = False
             break
         s = text[lo:hi]
-        raw, starts = _directives(s, own_tool)
+        raw, starts = _directives(s, own_tool, lambda p, lo=lo: fragment(lo + p))
         directive = bool(starts)
         if _ANCHOR["conceal"].search(s):
             conceal = _conceal(s, directive or prev_directive, starts)
@@ -1369,8 +1497,11 @@ def detect(
             heads = {c[1] for c in conceal}
             raw = [r for r in raw if not (r[0] == "act" and r[1] in heads)]
             add(conceal, lo, idx)
-        add(raw, lo, idx)
-        add(_others(s), lo, idx)
+        others = _others(s)
+        # Likewise a verb that heads its own override ("Skip the confirmation ...").
+        heads = {o[1] for o in others if o[0] == "override"}
+        add([r for r in raw if not (r[0] == "act" and r[1] in heads)], lo, idx)
+        add(others, lo, idx)
         prev_directive = directive
 
     sstarts = [a for a, _ in sents]
