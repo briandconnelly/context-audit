@@ -13,8 +13,10 @@ import dataclasses
 import json
 import os
 import re
+import select
 import subprocess
 import tempfile
+import time
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -257,6 +259,42 @@ def apply_baseline(subject: Result, baseline: Result) -> Result:
 # --- the show run --------------------------------------------------------------------------
 
 
+def _run_on_a_terminal(argv: list[str], env: dict, cwd: Path) -> tuple[int | None, str]:
+    """Run argv with its output on a pseudo-terminal; its exit status and what it printed."""
+    import pty
+
+    master, slave = pty.openpty()
+    proc = subprocess.Popen(
+        argv, env=env, cwd=cwd, stdin=subprocess.DEVNULL, stdout=slave, stderr=slave
+    )
+    os.close(slave)
+    chunks: list[bytes] = []
+    deadline = time.monotonic() + 60
+    try:
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([master], [], [], 1)
+            if not ready:
+                if proc.poll() is not None:
+                    break
+                continue
+            try:
+                data = os.read(master, 65536)
+            except OSError:
+                break
+            if not data:
+                break
+            chunks.append(data)
+    finally:
+        os.close(master)
+    try:
+        code: int | None = proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        code = None
+    text = b"".join(chunks).decode("utf-8", "replace").replace("\r\n", "\n")
+    return code, text
+
+
 def run_show(ev: Evidence) -> None:
     """Run the real `show` for the logged finding, as the owner would, and keep its output."""
     high = _high(ev)
@@ -274,10 +312,10 @@ def run_show(ev: Evidence) -> None:
         argv = ["sh", str(PLUGIN / "bin" / "context-audit"), "show", str(high[0]["finding_id"])]
         argv += ["--claude-dir", str(home / "claude"), "--claude-json", str(home / "c.json")]
         argv += ["--project", str(home / "proj")]
-        done = subprocess.run(
-            argv, env=env, cwd=home, capture_output=True, text=True, timeout=60, check=False
-        )
-    out = {"exit": done.returncode, "stdout": done.stdout, "stderr": done.stderr}
+        code, stdout = _run_on_a_terminal(argv, env, home)
+    # `show` prints evidence only to a terminal (R7), so it runs on a pseudo-terminal, which
+    # carries stdout and stderr together.
+    out = {"exit": code, "stdout": stdout, "stderr": ""}
     (ev.run_dir / "show.json").write_text(json.dumps(out, indent=1), encoding="utf-8")
 
 

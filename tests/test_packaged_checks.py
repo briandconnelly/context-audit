@@ -327,3 +327,15 @@ def test_over_budget_baseline_is_shown_when_partly_scanned_and_clean(tmp_path):
     check = p.clean_check("echo_big", partial=True)
     make_state(tmp_path, counters=PARTIAL, events=[gap()])
     assert check(evidence(tmp_path, calls=["echo_big"]))[0] == "shown"
+
+
+def test_show_runs_on_a_terminal(tmp_path):
+    # R7: show prints evidence only to a terminal, so the probe runs it on a PTY.
+    import sys
+
+    from probe.scenarios.packaged import _run_on_a_terminal
+
+    code, out = _run_on_a_terminal(
+        [sys.executable, "-c", "import sys; print(sys.stdout.isatty())"], {}, tmp_path
+    )
+    assert (code, out.strip()) == (0, "True")

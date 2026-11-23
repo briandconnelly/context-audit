@@ -14,6 +14,7 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import argparse  # noqa: E402
+import contextlib  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
 import stat  # noqa: E402
@@ -46,6 +47,15 @@ from context_audit.text import Field  # noqa: E402
 EXIT_OK, EXIT_HIGH, EXIT_USAGE, EXIT_SELFTEST, EXIT_UNAVAILABLE, EXIT_STATE = 0, 1, 2, 3, 4, 5
 CONTEXT = 80
 TRANSCRIPT_MAX_BYTES = 512 * 1024 * 1024
+
+
+NOT_A_TERMINAL = (
+    "evidence unavailable: show prints evidence only to a terminal; run it in a terminal"
+)
+
+
+def _is_terminal() -> bool:
+    return sys.stdout.isatty()
 
 
 class _Unavailable(Exception):
@@ -375,6 +385,9 @@ def cmd_show(args: argparse.Namespace) -> int:
     if not FINDING_ID.match(fid):
         print(f"not a finding ID: {escape(fid)}", file=sys.stderr)
         return EXIT_USAGE
+    if not _is_terminal():  # third-party text is shown to the owner, never to a pipe
+        print(NOT_A_TERMINAL)
+        return EXIT_UNAVAILABLE
     root = _open_state()
     records = [e for e in state.read_events(root) if e.get("finding_id") == fid]
     try:
@@ -420,6 +433,12 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # A backstop: any character the terminal cannot encode is escaped, never a crash.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            with contextlib.suppress(ValueError, OSError):
+                reconfigure(errors="backslashreplace")
     args = _parser().parse_args(argv)
     try:
         return args.func(args)

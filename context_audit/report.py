@@ -84,13 +84,21 @@ def safe_name(name: str, source_id: str) -> str:
     return name if NAME_OK.match(name) else source_id
 
 
+_ESCAPED = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+
+
 def escape(text: str) -> str:
-    """Control and format characters (ESC, newlines, bidi overrides) as \\xNN or \\uNNNN."""
+    """Control, format, surrogate, private-use, unassigned and line/paragraph separator
+    characters (ESC, newlines, bidi overrides, a lone surrogate) as \\xNN, \\uNNNN or
+    \\UNNNNNNNN."""
     out = []
     for c in text:
-        if unicodedata.category(c) in ("Cc", "Cf"):
+        if unicodedata.category(c) in _ESCAPED:
             n = ord(c)
-            out.append(f"\\x{n:02x}" if n < 0x100 else f"\\u{n:04x}")
+            if n < 0x100:
+                out.append(f"\\x{n:02x}")
+            else:
+                out.append(f"\\u{n:04x}" if n < 0x10000 else f"\\U{n:08x}")
         else:
             out.append(c)
     return "".join(out)

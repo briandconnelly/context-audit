@@ -28,6 +28,8 @@ CLAUDE_VERSION = "2.1.330"
 def env(tmp_path, monkeypatch):
     # Never ask the real `claude` binary; tests inject the version.
     monkeypatch.setattr(cli, "installed_claude_version", lambda: CLAUDE_VERSION)
+    # R7 (final fix wave): show prints evidence only on a terminal; capsys is not one.
+    monkeypatch.setattr(cli, "_is_terminal", lambda: True)
     home = tmp_path / "state"
     monkeypatch.setenv("CONTEXT_AUDIT_HOME", str(home))
     claude = tmp_path / "claude"
@@ -291,6 +293,68 @@ def test_json_keys_never_reach_the_log_and_show_still_finds_the_span(env, capsys
     log = (env["home"] / "events.jsonl").read_text()
     assert key not in log and "meta" not in log
     fid = next(r["finding_id"] for r in state.read_events(env["home"]) if r["severity"] == "high")
-    cli.sys.stdout.isatty = lambda: True  # type: ignore[method-assign]  # R7: show needs a TTY
     assert run(env, "show", fid) == 0
     assert "submit_feedback" in capsys.readouterr().out
+
+
+# --- R7: show prints evidence only to a terminal, and never crashes on odd characters ---
+
+
+def test_show_refuses_when_stdout_is_not_a_terminal(env, capsys, monkeypatch):
+    add_skill(env["claude"], "bad", CANARY)
+    fid = high_id(env, capsys)
+    monkeypatch.setattr(cli, "_is_terminal", lambda: False)
+    assert run(env, "show", fid) == 4
+    out = capsys.readouterr().out
+    assert out == cli.NOT_A_TERMINAL + "\n"
+    assert "submit_feedback" not in out
+
+
+def test_escape_handles_surrogates_and_separators():
+    assert report.escape("a\ud800b\u2028c\u2029d\ue000") == "a\\ud800b\\u2028c\\u2029d\\ue000"
+
+
+def _pty_run(argv: list[str], env: dict) -> tuple[int, str]:
+    import pty
+
+    master, slave = pty.openpty()
+    proc = subprocess.Popen(argv, stdout=slave, stderr=slave, stdin=subprocess.DEVNULL, env=env)
+    os.close(slave)
+    chunks = []
+    while True:
+        try:
+            data = os.read(master, 65536)
+        except OSError:
+            break
+        if not data:
+            break
+        chunks.append(data)
+    os.close(master)
+    return proc.wait(timeout=30), b"".join(chunks).decode("utf-8", "replace")
+
+
+def test_show_on_a_terminal_survives_a_lone_surrogate(env):
+    # I2: a lone surrogate before the canary in a tool result; show runs on a real PTY.
+    text = "Found \ud800 tickets. " + CANARY
+    lines = FIXTURE.read_text().splitlines()
+    entry = json.loads(lines[2])
+    entry["toolUseResult"] = [{"type": "text", "text": text}]
+    entry["message"]["content"][0]["content"] = [{"type": "text", "text": text}]
+    transcript = env["tmp"] / "t.jsonl"
+    transcript.write_text("\n".join([lines[0], lines[1], json.dumps(entry), lines[3]]) + "\n")
+    event = {
+        "session_id": "s", "transcript_path": str(transcript), "cwd": "/",
+        "hook_event_name": "PostToolUse", "tool_name": "mcp__examplecloud__search",
+        "tool_input": {}, "tool_use_id": "toolu_fixture01",
+        "mcp_server": {"name": "examplecloud", "source": "user"},
+        "tool_response": [{"type": "text", "text": text}],
+    }  # fmt: skip
+    e = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
+    e["CONTEXT_AUDIT_HOME"] = str(env["home"])
+    e["HOME"] = str(env["tmp"])
+    subprocess.run([sys.executable, "-I", str(HOOK)], input=json.dumps(event), text=True,
+                   capture_output=True, env=e, check=True, timeout=30)  # fmt: skip
+    fid = next(r["finding_id"] for r in state.read_events(env["home"]) if r["severity"] == "high")
+    code, out = _pty_run([sys.executable, "-I", str(CLI), "show", fid, *env["args"]], e)
+    assert code == 0, out
+    assert "\\ud800" in out and "submit_feedback" in out and "Traceback" not in out
