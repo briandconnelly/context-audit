@@ -108,3 +108,24 @@ def test_normalize_is_linear_on_adversarial_input():
     fenced(n)
     assert time.perf_counter() - start < 0.5
     assert len(n.text) == len(text)
+
+
+ADVERSARIAL = {
+    "curly-open": "“" * 200_000,
+    "curly-open-lines": "“ x\n" * 50_000,
+    "straight": '"' * 200_000,
+    "unclosed-fence": "```\n" + "a " * 100_000,
+    "fences": "```\n" * 50_000,
+    "blockquotes": "> " * 100_000,
+    "comments": "<!--" * 50_000,
+    "base64": "QUJD" * 50_000,
+}
+
+
+def test_every_pattern_is_linear_on_adversarial_input():
+    for name, text in ADVERSARIAL.items():
+        start = time.perf_counter()
+        n = normalize(field(text))
+        sentences(n)
+        fenced(n)
+        assert time.perf_counter() - start < 0.5, name

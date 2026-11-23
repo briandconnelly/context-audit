@@ -33,7 +33,7 @@ _COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
 _ENCODED = re.compile(r"[A-Za-z0-9+/]{80,}={0,2}")
 _FENCE = re.compile(r"^[ \t]*```.*?(?:^[ \t]*```[^\n]*|\Z)", re.DOTALL | re.MULTILINE)
 _BLOCKQUOTE = re.compile(r"^[ \t]*>[^\n]*", re.MULTILINE)
-_QUOTE = re.compile(r'"[^"\n]*"|“[^”]*”')
+_STRAIGHT_QUOTE = re.compile(r'"[^"\n]*"')
 
 
 @dataclass(frozen=True)
@@ -146,19 +146,40 @@ def sentences(n: Normalized) -> list[tuple[int, int]]:
     return spans
 
 
+def _curly_quotes(src: str) -> list[tuple[int, int]]:
+    """Pair each opening curly quote with the next closing one in a single pass.
+
+    A regex here backtracks quadratically on many unclosed opening quotes.
+    """
+    spans: list[tuple[int, int]] = []
+    opened = -1
+    for i, c in enumerate(src):
+        if c == "\u201c" and opened < 0:
+            opened = i
+        elif c == "\u201d" and opened >= 0:
+            spans.append((opened, i + 1))
+            opened = -1
+    return spans
+
+
 def fenced(n: Normalized) -> list[tuple[int, int]]:
     """Normalized spans of quoted material: code fences, block quotes, and quotations."""
     src = n.source
     found: list[tuple[int, int]] = []  # sorted, non-overlapping original spans
-    for pattern in (_FENCE, _BLOCKQUOTE, _QUOTE):
+    groups = (
+        [m.span() for m in _FENCE.finditer(src)],
+        [m.span() for m in _BLOCKQUOTE.finditer(src)],
+        sorted([m.span() for m in _STRAIGHT_QUOTE.finditer(src)] + _curly_quotes(src)),
+    )
+    for matches in groups:
         taken = list(found)
         starts = [s for s, _ in taken]
-        for m in pattern.finditer(src):
+        for m_start, m_end in matches:
             # Only the last earlier span starting before this match can overlap it.
-            k = bisect_left(starts, m.end()) - 1
-            if k >= 0 and taken[k][1] > m.start():
+            k = bisect_left(starts, m_end) - 1
+            if k >= 0 and taken[k][1] > m_start:
                 continue
-            found.append((m.start(), m.end()))
+            found.append((m_start, m_end))
         found.sort()
     spans = (_to_normalized(n, s, e) for s, e in found)
     return [s for s in spans if s is not None]
