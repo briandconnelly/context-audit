@@ -1,0 +1,185 @@
+"""Join feature matches into findings under the closed table of high combinations.
+
+Precedence, from the spec: negation (already applied by `detect`), then quotation, then
+the user-approval condition, then the table. A quoted or conditioned match yields review
+at most. Joining: same sentence, or adjacent sentences where the later one refers back;
+sibling blocks of one result (same `source_id`, consecutive `block`) are one sentence
+sequence for this test. Fields with different `source_id` never join.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import re
+from bisect import bisect_left
+from dataclasses import dataclass
+from itertools import chain, combinations, product
+from pathlib import Path
+
+from context_audit import RULE_VERSION
+from context_audit.features import Match
+from context_audit.state import span_digest
+from context_audit.text import Field, Normalized, normalize, original_range, sentences
+
+HIGH_TABLE = frozenset(
+    {
+        frozenset({"conceal-act", "act"}),
+        frozenset({"conceal-act", "call"}),
+        frozenset({"override", "act"}),
+    }
+)
+# Surfaces on which a lone `act` or `call` is reported; elsewhere they only combine.
+_DIRECTIVE_SURFACES = frozenset({"tool_result", "tool_error"})
+_TABLE_FEATURES = frozenset().union(*HIGH_TABLE)
+_BACK_REFERENCE = re.compile(r"\b(?:this|that|it|these|the above)\b", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class Finding:
+    finding_id: str  # "f-" + 12 hex, derived from source_id, locator, digest
+    source_id: str
+    surface: str
+    locator: str  # locators of the fields the ranges lie in, in order, joined by "+"
+    ranges: tuple[tuple[int, int], ...]  # ORIGINAL code-point ranges, one per joined feature
+    features: tuple[str, ...]  # sorted
+    severity: str  # "high" | "review"
+    rule_version: int
+    digest: str
+    tool: str | None  # for a call feature
+
+
+@dataclass(frozen=True)
+class _Hit:
+    field: int  # index into fields
+    pos: int  # position in the sentence sequence of the field's run of sibling blocks
+    match: Match
+    range: tuple[int, int]  # original
+
+
+def _runs(fields: list[Field]) -> list[list[int]]:
+    """Field indexes grouped into runs that may join: same source, consecutive blocks."""
+    by_source: dict[str, list[int]] = {}
+    for i, f in enumerate(fields):
+        by_source.setdefault(f.source_id, []).append(i)
+    runs: list[list[int]] = []
+    for idxs in by_source.values():
+        idxs.sort(key=lambda i: (fields[i].block, i))
+        current = [idxs[0]]
+        for i in idxs[1:]:
+            if fields[i].block == fields[current[-1]].block + 1:
+                current.append(i)
+            else:
+                runs.append(current)
+                current = [i]
+        runs.append(current)
+    return runs
+
+
+def _hidden_ranges(n: Normalized) -> dict[int, list[tuple[int, int]]]:
+    """Original ranges of hidden spans keyed by the normalized start `detect` gives them."""
+    out: dict[int, list[tuple[int, int]]] = {}
+    for h_start, h_end, _kind in n.hidden:
+        start = min(bisect_left(n.origin, h_start), len(n.text))
+        out.setdefault(start, []).append((h_start, h_end))
+    return out
+
+
+def _hits(
+    fields: list[Field], run: list[int], matches: dict[int, list[Match]]
+) -> tuple[list[_Hit], list[bool]]:
+    """Hits in one run, and for each sentence position whether it refers back."""
+    hits: list[_Hit] = []
+    refers_back: list[bool] = []
+    for i in run:
+        n = normalize(fields[i])
+        sents = sentences(n)
+        base = len(refers_back)
+        refers_back.extend(bool(_BACK_REFERENCE.search(n.text[a:b])) for a, b in sents)
+        if not sents:  # an empty block still separates its neighbours
+            refers_back.append(False)
+        hidden = _hidden_ranges(n)
+        for m in matches.get(i, []):
+            if m.feature == "hidden" and hidden.get(m.start):
+                rng = hidden[m.start].pop(0)
+            else:
+                rng = original_range(n, m.start, m.end)
+            hits.append(_Hit(i, base + m.sentence, m, rng))
+    return hits, refers_back
+
+
+def _joined(a: _Hit, b: _Hit, refers_back: list[bool]) -> bool:
+    if a.pos == b.pos:
+        return True
+    later = max(a.pos, b.pos)
+    return abs(a.pos - b.pos) == 1 and refers_back[later]
+
+
+def _high_pair(a: _Hit, b: _Hit, refers_back: list[bool]) -> bool:
+    if frozenset({a.match.feature, b.match.feature}) not in HIGH_TABLE:
+        return False
+    if a.match.quoted or b.match.quoted or a.match.conditioned or b.match.conditioned:
+        return False
+    return _joined(a, b, refers_back)
+
+
+def _root(parent: list[int], k: int) -> int:
+    """Union-find root, halving the path as it goes."""
+    while parent[k] != k:
+        parent[k] = parent[parent[k]]
+        k = parent[k]
+    return k
+
+
+def _finding(fields: list[Field], hits: list[_Hit], severity: str, root: Path) -> Finding:
+    hits = sorted(hits, key=lambda h: (fields[h.field].block, h.field, h.range))
+    first = fields[hits[0].field]
+    locators = list(dict.fromkeys(fields[h.field].locator for h in hits))
+    locator = "+".join(locators)
+    digest = span_digest(root, "\x1f".join(fields[h.field].text[slice(*h.range)] for h in hits))
+    key = "\x00".join((first.source_id, locator, digest)).encode("utf-8", "surrogatepass")
+    return Finding(
+        finding_id="f-" + hashlib.sha256(key).hexdigest()[:12],
+        source_id=first.source_id,
+        surface=first.surface,
+        locator=locator,
+        ranges=tuple(h.range for h in hits),
+        features=tuple(sorted(h.match.feature for h in hits)),
+        severity=severity,
+        rule_version=RULE_VERSION,
+        digest=digest,
+        tool=next((h.match.tool for h in hits if h.match.tool), None),
+    )
+
+
+def judge(fields: list[Field], matches: dict[int, list[Match]], state_root: Path) -> list[Finding]:
+    """Findings for `matches`, keyed by each field's index in `fields`."""
+    findings: list[Finding] = []
+    for run in _runs(fields):
+        if not any(matches.get(i) for i in run):
+            continue
+        hits, refers_back = _hits(fields, run, matches)
+        parent = list(range(len(hits)))
+        by_pos: dict[int, list[int]] = {}
+        for k, h in enumerate(hits):
+            if h.match.feature in _TABLE_FEATURES:
+                by_pos.setdefault(h.pos, []).append(k)
+        in_high: set[int] = set()
+        for pos, here in by_pos.items():
+            pairs = chain(combinations(here, 2), product(here, by_pos.get(pos + 1, ())))
+            for x, y in pairs:
+                if _high_pair(hits[x], hits[y], refers_back):
+                    parent[_root(parent, x)] = _root(parent, y)
+                    in_high.update((x, y))
+        groups: dict[int, list[_Hit]] = {}
+        for k in sorted(in_high):
+            groups.setdefault(_root(parent, k), []).append(hits[k])
+        findings.extend(_finding(fields, g, "high", state_root) for g in groups.values())
+        for k, h in enumerate(hits):
+            if k in in_high:
+                continue
+            lone_directive = h.match.feature in {"act", "call"}
+            if lone_directive and fields[h.field].surface not in _DIRECTIVE_SURFACES:
+                continue
+            findings.append(_finding(fields, [h], "review", state_root))
+    findings.sort(key=lambda f: (f.source_id, f.locator, f.ranges))
+    return findings
