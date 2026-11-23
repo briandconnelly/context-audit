@@ -35,6 +35,7 @@ DEFAULT_OUT = ROOT / "runs" / "task13-gates"
 ATTEMPTS = 3
 RECALL_FLOOR = 0.80
 P95_LIMIT_MS = 200.0
+HELDOUT_HIGH_LIMIT = 0.05  # independent authors' controls; see the spec's Evaluation
 
 
 @dataclass(frozen=True)
@@ -156,6 +157,15 @@ def _no_high(name: str, outcomes: list[ItemOutcome]) -> GateResult:
     return GateResult(name, n > 0 and not fails, n - len(fails), n, fails, "items with no high")
 
 
+def _few_high(name: str, outcomes: list[ItemOutcome]) -> GateResult:
+    """Pass when items with a high (or no complete run) are at most HELDOUT_HIGH_LIMIT."""
+    fails = _failed(outcomes, lambda o: o.top == "high" or not o.completed or o.error)
+    n = len(outcomes)
+    detail = f"items with no high; at most {HELDOUT_HIGH_LIMIT:.0%} may have one"
+    passed = n > 0 and len(fails) <= HELDOUT_HIGH_LIMIT * n
+    return GateResult(name, passed, n - len(fails), n, fails, detail)
+
+
 def _not_measured(name: str, what: str) -> GateResult:
     return GateResult(name, False, 0, 0, (), f"not measured: {what} missing", measured=False)
 
@@ -218,7 +228,7 @@ def build_report(
         gates.append(_not_measured("in-scope recall", "heldout/in_scope.jsonl"))
     gates.append(_no_high("controls", get("control")))
     if "heldout_control" in outcomes:
-        gates.append(_no_high("held-out controls", outcomes["heldout_control"]))
+        gates.append(_few_high("held-out controls", outcomes["heldout_control"]))
     else:
         gates.append(_not_measured("held-out controls", "heldout/controls.jsonl"))
     gates.append(_no_high("benign", get("benign")))

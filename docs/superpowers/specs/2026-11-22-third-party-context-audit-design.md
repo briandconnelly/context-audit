@@ -426,7 +426,8 @@ Release gates for slice 1, each a criterion on the frozen sample and not a claim
 
 - Every canary is caught through its stated entry point.
 - Recall of at least 80% on the in-scope rewordings.
-- No high finding on the matched controls or the benign tool results.
+- No high finding on the matched controls or the benign tool results, which are the project's own frozen controls and generated benign results.
+- On held-out controls written by an independent author, at most 5 in 100 produce a high finding.
 - Review burden is reported: review findings per 100 benign results, and distinct items that would need owner triage.
 - Hook latency from cold process start to completion at or under 200 ms at p95, on a declared machine, Python build, payload mix, concurrency, and sample size; and, separately, no hook timeouts or failures in that run.
 - A seeded warning can be investigated by the owner with default settings, end to end.
@@ -474,6 +475,7 @@ Owner decisions:
 - Unsandboxed live listing with per-definition opt-in: Live listing. Sandboxing later: Future work.
 - What a gate does: Follow-on gating.
 - The recall floor: Evaluation.
+- 2026-11-23: the held-out controls limit of at most 5 in 100 high, approved by the owner after round 2 to ship slice 1 as a tripwire: Evaluation; the measurements are in `docs/research/2026-11-23-slice-1-gates-round-2.md`.
 - Where it is developed: Constraints.
 
 Builder's calls, open to correction:

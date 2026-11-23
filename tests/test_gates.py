@@ -239,6 +239,29 @@ def test_heldout_controls_gate_fails_on_a_high():
     assert g.failing_ids == ("hct-001",)
 
 
+def _heldout_controls(highs: int, n: int = 100):
+    return {
+        "heldout_control": [
+            _o(f"hct-{i:03d}", "heldout_control", "none", "high" if i < highs else "none")
+            for i in range(n)
+        ]
+    }
+
+
+def test_heldout_controls_gate_passes_at_five_in_a_hundred():
+    g = _gate(build_report(_heldout_controls(5)), "held-out controls")
+    assert g.measured and g.passed is True
+    assert (g.numerator, g.denominator) == (95, 100)
+    assert len(g.failing_ids) == 5
+    assert "at most 5%" in g.detail
+
+
+def test_heldout_controls_gate_fails_at_six_in_a_hundred():
+    g = _gate(build_report(_heldout_controls(6)), "held-out controls")
+    assert g.measured and g.passed is False
+    assert len(g.failing_ids) == 6
+
+
 def test_dev_recall_is_split_into_a_and_b_and_ungated():
     outcomes = {
         "dev_in_scope": [
