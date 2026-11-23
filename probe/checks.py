@@ -8,7 +8,7 @@ from typing import Any
 from probe.scenario import Evidence
 
 
-def _dump(value: Any) -> str:
+def dump(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
@@ -29,7 +29,7 @@ def hook_records(
 
 
 def hook_saw(ev: Evidence, event: str, marker: str, *, label: str | None = None) -> bool:
-    return any(marker in _dump(r["input"]) for r in hook_records(ev, event, label=label))
+    return any(marker in dump(r["input"]) for r in hook_records(ev, event, label=label))
 
 
 def scripted_requests(ev: Evidence) -> list[dict[str, Any]]:
@@ -38,11 +38,11 @@ def scripted_requests(ev: Evidence) -> list[dict[str, Any]]:
 
 def next_request_has(ev: Evidence, marker: str) -> bool:
     """True when a model request after the first carries ``marker``."""
-    return any(marker in _dump(r["body"]) for r in scripted_requests(ev)[1:])
+    return any(marker in dump(r["body"]) for r in scripted_requests(ev)[1:])
 
 
 def any_request_has(ev: Evidence, marker: str) -> bool:
-    return any(marker in _dump(r["body"]) for r in ev.requests)
+    return any(marker in dump(r["body"]) for r in ev.requests)
 
 
 def events_seen(ev: Evidence) -> list[str]:
@@ -52,7 +52,7 @@ def events_seen(ev: Evidence) -> list[str]:
 def any_hook_event_has(ev: Evidence, marker: str) -> list[str]:
     names = set()
     for record in ev.hook_events:
-        if marker in _dump(record.get("input", {})):
+        if marker in dump(record.get("input", {})):
             names.add(str(record["input"].get("hook_event_name")))
     return sorted(names)
 
