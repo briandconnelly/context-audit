@@ -16,7 +16,7 @@ from context_audit.features import Match, detect
 from context_audit.rules import Finding, judge
 from context_audit.text import Field, normalize
 
-_SENTENCE_END = re.compile(r"[.!?](?=\s)|\n")
+_SENTENCE_END = re.compile(r"[.!?](?=\s|$)|\n")
 _WHITESPACE = re.compile(r"\s")
 
 

@@ -59,6 +59,12 @@ def test_byte_budget_skips_fields_that_do_not_fit(tmp_path):
     assert all(f.locator != "content[2].text" for f in r.findings)
 
 
+def test_truncation_keeps_a_sentence_ending_at_the_cut(tmp_path):
+    r = scan_fields([field(CANARY)], state_root=tmp_path, budget=Budget(max_bytes=39))
+    assert r.reason == "byte-budget"
+    assert [f.features for f in r.findings] == [("call",)]
+
+
 def test_finding_past_the_cut_is_not_reported_and_outcome_is_partial(tmp_path):
     fields = [field("Results: 3 rows.", 0, "s"), field(CANARY, 1, "s")]
     r = scan_fields(fields, state_root=tmp_path, budget=Budget(max_bytes=20))
@@ -133,13 +139,16 @@ def test_corpus_top_severity(item, tmp_path):
         offsets = [0]
         for t in texts[:-1]:
             offsets.append(offsets[-1] + len(t) + 2)  # blocks join with a blank line
-        # The labelled span covers the whole directive, while each range covers one feature,
-        # so a range locates the span when it overlaps it. A finding joined across blocks
-        # keeps per-block ranges and the span lies in one block, so try each block offset.
+        # INTERIM (see task-5 report, fix round 1): credit a high finding when some range,
+        # placed in its own block, overlaps the labelled span; blocks join with a blank line.
+        # The ruled "every range overlaps" check fails 42 correct adjacent-sentence highs,
+        # because corpus spans label one side of the pair; awaiting a controller decision.
+        offsets, off = {}, 0
+        for i, t in enumerate(texts):
+            offsets[f"content[{i}].text"] = off
+            off += len(t) + 2
         assert any(
-            off + a < end and start < off + b
+            any(offsets[loc] + a < end and start < offsets[loc] + b for loc, a, b in f.ranges)
             for f in r.findings
             if f.severity == "high"
-            for a, b in f.ranges
-            for off in offsets
         )

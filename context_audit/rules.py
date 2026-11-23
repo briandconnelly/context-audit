@@ -39,8 +39,9 @@ class Finding:
     finding_id: str  # "f-" + 12 hex, derived from source_id, locator, digest
     source_id: str
     surface: str
-    locator: str  # locators of the fields the ranges lie in, in order, joined by "+"
-    ranges: tuple[tuple[int, int], ...]  # ORIGINAL code-point ranges, one per joined feature
+    locator: str  # locator of the finding's first range
+    # (locator, start, end) per joined feature: ORIGINAL code-point indexes in that field
+    ranges: tuple[tuple[str, int, int], ...]
     features: tuple[str, ...]  # sorted
     severity: str  # "high" | "review"
     rule_version: int
@@ -107,6 +108,25 @@ def _hits(
     return hits, refers_back
 
 
+def _drop_contained(hits: list[_Hit]) -> list[_Hit]:
+    """Drop a hit whose range lies within another hit of the same feature and field, so a
+    sentence yields each feature once. Identical ranges keep the first."""
+    kept: list[_Hit] = []
+    by_key: dict[tuple[int, str], list[_Hit]] = {}
+    for h in hits:
+        by_key.setdefault((h.field, h.match.feature), []).append(h)
+    for group in by_key.values():
+        group.sort(key=lambda h: (h.range[0], -h.range[1]))
+        reach = -1
+        for h in group:
+            if h.range[1] <= reach:
+                continue
+            kept.append(h)
+            reach = h.range[1]
+    kept.sort(key=lambda h: (h.field, h.range))
+    return kept
+
+
 def _joined(a: _Hit, b: _Hit, refers_back: list[bool]) -> bool:
     if a.pos == b.pos:
         return True
@@ -115,6 +135,8 @@ def _joined(a: _Hit, b: _Hit, refers_back: list[bool]) -> bool:
 
 
 def _high_pair(a: _Hit, b: _Hit, refers_back: list[bool]) -> bool:
+    # Spec precedence: quotation, then the user-approval condition, then the table. Any
+    # conditioned match (only override carries the flag) is excluded from high.
     if frozenset({a.match.feature, b.match.feature}) not in HIGH_TABLE:
         return False
     if a.match.quoted or b.match.quoted or a.match.conditioned or b.match.conditioned:
@@ -133,8 +155,7 @@ def _root(parent: list[int], k: int) -> int:
 def _finding(fields: list[Field], hits: list[_Hit], severity: str, root: Path) -> Finding:
     hits = sorted(hits, key=lambda h: (fields[h.field].block, h.field, h.range))
     first = fields[hits[0].field]
-    locators = list(dict.fromkeys(fields[h.field].locator for h in hits))
-    locator = "+".join(locators)
+    locator = first.locator
     digest = span_digest(root, "\x1f".join(fields[h.field].text[slice(*h.range)] for h in hits))
     key = "\x00".join((first.source_id, locator, digest)).encode("utf-8", "surrogatepass")
     return Finding(
@@ -142,8 +163,8 @@ def _finding(fields: list[Field], hits: list[_Hit], severity: str, root: Path) -
         source_id=first.source_id,
         surface=first.surface,
         locator=locator,
-        ranges=tuple(h.range for h in hits),
-        features=tuple(sorted(h.match.feature for h in hits)),
+        ranges=tuple((fields[h.field].locator, *h.range) for h in hits),
+        features=tuple(sorted({h.match.feature for h in hits})),
         severity=severity,
         rule_version=RULE_VERSION,
         digest=digest,
@@ -158,6 +179,7 @@ def judge(fields: list[Field], matches: dict[int, list[Match]], state_root: Path
         if not any(matches.get(i) for i in run):
             continue
         hits, refers_back = _hits(fields, run, matches)
+        hits = _drop_contained(hits)
         parent = list(range(len(hits)))
         by_pos: dict[int, list[int]] = {}
         for k, h in enumerate(hits):
@@ -181,5 +203,5 @@ def judge(fields: list[Field], matches: dict[int, list[Match]], state_root: Path
             if lone_directive and fields[h.field].surface not in _DIRECTIVE_SURFACES:
                 continue
             findings.append(_finding(fields, [h], "review", state_root))
-    findings.sort(key=lambda f: (f.source_id, f.locator, f.ranges))
+    findings.sort(key=lambda f: (f.source_id, f.ranges))
     return findings
