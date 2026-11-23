@@ -2,9 +2,10 @@
 
 Precedence, from the spec: negation (already applied by `detect`), then quotation, then
 the user-approval condition, then the table. A quoted or conditioned match yields review
-at most. Joining: same sentence, or adjacent sentences where the later one refers back;
-sibling blocks of one result (same `source_id`, consecutive `block`) are one sentence
-sequence for this test. Fields with different `source_id` never join.
+at most, and so does a match on a record line (`Match.record`). Joining: same sentence,
+or adjacent sentences where the later one refers back; sibling blocks of one result (same
+`source_id`, consecutive `block`) are one sentence sequence for this test. Fields with
+different `source_id` never join.
 """
 
 from __future__ import annotations
@@ -140,6 +141,8 @@ def _high_pair(a: _Hit, b: _Hit, refers_back: list[bool]) -> bool:
     if frozenset({a.match.feature, b.match.feature}) not in HIGH_TABLE:
         return False
     if a.match.quoted or b.match.quoted or a.match.conditioned or b.match.conditioned:
+        return False
+    if a.match.record or b.match.record:  # a record line reports; see `Match.record`
         return False
     return _joined(a, b, refers_back)
 

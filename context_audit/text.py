@@ -46,6 +46,17 @@ _ALT_SKIP = frozenset("0123456789!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
 _LINE_BREAK = re.compile(r"[\n\r\u2028\u2029]")
 _LIST_ITEM = re.compile(r"(?:[-*+]|\d+[.)])(?: |$)")
 _BLOCK_START = re.compile(r"(?:[-*+](?: |$)|\d+[.)](?: |$)|#|>|\||```)")
+_RECORD_LEAD = re.compile(
+    r"(?:\[?\d{4}-\d{2}-\d{2}"  # date or timestamp
+    r"|\[?\d{1,2}:\d{2}\b"  # time of day
+    r"|(?=[0-9a-f]{0,39}\d)[0-9a-f]{7,40}\b"  # commit hash with at least one digit
+    r"|\[?(?:TRACE|DEBUG|INFO|NOTICE|WARN|WARNING|ERROR|ERR|FATAL|CRITICAL)\b"  # log level
+    r"|(?:feat|fix|chore|docs|refactor|test|tests|perf|build|ci|style|revert)"
+    r"(?:\([^)\s]{1,40}\))?!?: "  # conventional commit prefix
+    r"|(?i:step) \d+|\[\d+/\d+\]|\d+/\d+ "  # step markers
+    r"|(?:PASS|PASSED|FAIL|FAILED|SKIP|SKIPPED|XFAIL|ok \d|not ok \d)\b)"  # test runners
+)
+_BULLETS = frozenset("•‣◦⁃∙")
 _BACKTICKS = re.compile(r"`+")
 _HAS_SPACE = re.compile(r"\s")
 _SEPARATORS = frozenset("\u2028\u2029")  # line and paragraph separators
@@ -339,6 +350,66 @@ def line_breaks(n: Normalized) -> list[int]:
     return found
 
 
+def _shape(text: str, lo: int, hi: int) -> str:
+    """Character-class shape of the line's first token: digits 9, letters a, other kept."""
+    end = text.find(" ", lo, hi)
+    out: list[str] = []
+    for c in text[lo : min(end if end >= 0 else hi, lo + 40)]:
+        k = "9" if c.isdigit() else "a" if c.isalpha() else c
+        if not out or out[-1] != k:
+            out.append(k)
+    return "".join(out)
+
+
+def _shaped(shape: str) -> bool:
+    """Whether a first-token shape marks a record: a digit, or punctuation inside the token
+    (not only a closing colon, comma or period, which a label or a word carries)."""
+    return "9" in shape or any(c != "a" for c in shape.rstrip(":,."))
+
+
+def _line_spans(n: Normalized) -> list[tuple[int, int]]:
+    spans, lo = [], 0
+    for i in line_breaks(n):
+        spans.append((lo, i))
+        lo = i + 1
+    spans.append((lo, len(n.text)))
+    return [(a, b) for a, b in spans if a < b]
+
+
+def record_lines(n: Normalized) -> list[tuple[int, int]]:
+    """Normalized spans of record lines: lines of list-like output that report something.
+
+    A record line begins with a timestamp, a commit hash, a log level, a conventional
+    commit prefix (`type:` or `type(scope):`), a step or test-runner marker, or a status
+    symbol, or its first token has the same digit- or punctuation-bearing shape as the
+    first token of a neighbouring line (invoice rows, `name::test` lines). List items are
+    not records: a numbered or bulleted step is an instruction as often as a report. Nor
+    are runs of headings, table rows, block quotes or fences, which have rules of their own.
+    """
+    text = n.text
+    lines = _line_spans(n)
+    shapes = ["" if _BLOCK_START.match(text, a, b) else _shape(text, a, b) for a, b in lines]
+    out: list[tuple[int, int]] = []
+    for k, (a, b) in enumerate(lines):
+        first = text[a]
+        if _RECORD_LEAD.match(text, a, b) or (
+            first > "\x7f" and first not in _BULLETS and unicodedata.category(first)[0] == "S"
+        ):
+            out.append((a, b))
+            continue
+        shape = shapes[k]
+        if (
+            shape
+            and _shaped(shape)
+            and (
+                (k > 0 and shapes[k - 1] == shape)
+                or (k + 1 < len(lines) and shapes[k + 1] == shape)
+            )
+        ):
+            out.append((a, b))
+    return out
+
+
 def _block_kind(text: str, at: int) -> str:
     if text.startswith(("#", "|", "```"), at):
         return "line"  # headings, table rows and fences end at their line
@@ -356,7 +427,9 @@ def sentences(n: Normalized) -> list[tuple[int, int]]:
     a blank line; a line ending in a colon; a heading, table row or fence line; a block
     quote line not followed by another; a list item not followed by an indented
     continuation; or a next line that starts a list item, heading, block quote, table row,
-    or fence. A single line break inside a paragraph is a space.
+    or fence. A line break before or after a record line (see `record_lines`) also ends
+    one, so a record never joins a neighbour. A single line break inside a paragraph is a
+    space.
     """
     spans: list[tuple[int, int]] = []
     text, size = n.text, len(n.text)
@@ -372,6 +445,8 @@ def sentences(n: Normalized) -> list[tuple[int, int]]:
             spans.append((begin, end))
 
     breaks_at = set(line_breaks(n))
+    records = {a for a, _ in record_lines(n)}
+    line = 0  # start of the current line
     for i, c in enumerate(text):
         if c == " ":
             if i not in breaks_at:
@@ -379,7 +454,9 @@ def sentences(n: Normalized) -> list[tuple[int, int]]:
             run = _run(n, i)
             breaks = _break_count(run)
             nxt = i + 1
-            if block == "quote":
+            if line in records or nxt in records:
+                ends = True
+            elif block == "quote":
                 ends = not text.startswith(">", nxt)
             elif block == "list":
                 tail = run[max(run.rfind("\n"), run.rfind("\r")) + 1 :]
@@ -390,6 +467,7 @@ def sentences(n: Normalized) -> list[tuple[int, int]]:
                 close(start, i)
                 start = nxt
                 block = _block_kind(text, nxt)
+            line = nxt
         elif (
             c in ".!?"
             and (i + 1 == size or text[i + 1] == " ")

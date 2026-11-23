@@ -18,7 +18,7 @@ import time
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 
-from context_audit.text import Field, Normalized, fenced, line_breaks, sentences
+from context_audit.text import Field, Normalized, fenced, line_breaks, record_lines, sentences
 
 FEATURES = ("act", "call", "conceal-act", "audience", "solicit", "override", "hidden")
 
@@ -32,6 +32,11 @@ class Match:
     quoted: bool  # inside fenced(n)
     conditioned: bool = False  # override only: conditioned on the user's own approval
     tool: str | None = None  # call only: the tool name the text directs a call to
+    # On a record line (`text.record_lines`): a log line, commit subject, step line. Such a
+    # line reports something even when its content is imperative in form, so a feature on
+    # it is rated review at most. This is a known evasion route, accepted for precision:
+    # a directive written as a commit subject or log line is not rated high.
+    record: bool = False
 
 
 class Detection(list[Match]):
@@ -78,7 +83,7 @@ _ACT_VERBS = (
 )
 # Clause starts and polite openers that put the verb in imperative position.
 _OPENER = (
-    r"(?:^|[\n.!?:;,(\"“`]|\b(?:and|et|und|then|also|now|first|next|please|kindly"
+    r"(?P<opener>^|[\n.!?:;,(\"“`]|\b(?:and|et|und|then|also|now|first|next|please|kindly"
     r"|afterwards|so|or|just|immediately|always|simply|you\s+should|you\s+must"
     r"|you\s+need\s+to|you{_A}ll\s+need\s+to|you\s+will\s+need\s+to|you\s+can|you\s+may"
     r"|be\s+sure\s+to|make\s+sure\s+to|remember\s+to|don{_A}t\s+forget\s+to"
@@ -133,6 +138,75 @@ _SUBJECT_THEN_VERB = re.compile(
     rf"|(?:{_FINITE_OR_OBJECT})\b(?=\s+(?!(?:{_OBJECT_CONTINUES})\b)[A-Za-z]))",
     _I,
 )
+# A third-person verb followed by the start of its object: "Send button sends the message".
+_THIRD_PERSON = (
+    r"(?![a-z]*ss\b)[a-z]{2,}s\b(?=\s+(?:the|a|an|this|that|these|those|its|their|your|our"
+    r"|my|his|her|it|them|every|each|all|any|no|some)\b)"
+)
+# A past-tense verb: one that is never a participle, or an -ed form that ends its clause or
+# is followed by a manner or time adverb ("Call volume spiked sharply", "deploy step ran").
+# An -ed form followed by an object or a preposition stays ambiguous with a participle
+# ("Send files uploaded during the outage") and is not counted.
+_PAST = (
+    r"(?:ran|took|went|began|broke|wrote|rose|fell|gave|came|became|grew|knew|threw|drew"
+    r"|flew|spoke|chose|froze|woke|ate|saw|did)\b"
+    r"|[a-z]{2,}ed\b(?=\s*(?:[,.;:!?]|$)|\s+(?:silently|quietly|again|twice|overnight"
+    r"|yesterday|today|earlier|sharply|suddenly|unexpectedly|briefly)\b)"
+)
+# A plural-form verb followed by the start of its object, counted after a plural noun:
+# "Delete requests remove the record", "Upload jobs send the file".
+_PLURAL_VERB = (
+    rf"(?:{_ACT_VERBS}|deliver|receive|reach|hide|keep|show|leave)\b(?=\s+(?:the|a|an|this"
+    r"|that|these|those|its|their|your|our|it|them|every|each|all|any)\b)"
+)
+_SUBJECT_REPORT = re.compile(
+    rf"\s+(?!(?:{_NOT_A_SUBJECT})\b)(?P<noun>\w[\w'-]*)\s+"
+    rf"(?:{_THIRD_PERSON}|{_PAST}|(?P<plural>{_PLURAL_VERB}))",
+    _I,
+)
+# Adverbs that open an imperative ("Now run ...", "and then send ...") but, after a
+# subject, sit inside a report ("Exports now run ...", "The job will then send ...").
+_ADVERB_OPENERS = frozenset(
+    {
+        "then",
+        "also",
+        "now",
+        "first",
+        "next",
+        "just",
+        "always",
+        "immediately",
+        "simply",
+        "afterwards",
+    }
+)
+# Words that may stand before such an adverb in an imperative.
+_IMPERATIVE_LEAD = frozenset(
+    {
+        "and",
+        "or",
+        "but",
+        "so",
+        "then",
+        "please",
+        "kindly",
+        "also",
+        "now",
+        "first",
+        "next",
+        "just",
+        "always",
+        "simply",
+        "immediately",
+        "afterwards",
+        "finally",
+        "et",
+        "und",
+        "to",
+        "you",
+    }
+)
+_LAST_WORD = re.compile(r"(\w+)\W*$")
 # Verbs that take a clause: "Verify services are running." is an imperative.
 _CLAUSE_VERBS = frozenset({"check", "verify", "confirm"})
 # Verb-specific idioms that are not directives: "Set to `x`" (a parameter's meaning),
@@ -796,20 +870,29 @@ _Raw = tuple[str, int, int, bool, str | None]  # feature, start, end, conditione
 
 def _heads_a_subject(s: str, verb: str, end: int) -> bool:
     """Whether the verb-class word ending at `end` is a noun in the subject of a finite verb:
-    it is followed by a noun-like word and then a finite verb."""
+    it is followed by a noun-like word and then a finite, third-person or past-tense verb."""
     if verb.lower() in _CLAUSE_VERBS:
         return False
-    m = _SUBJECT_THEN_VERB.match(s, end)
+    m = _SUBJECT_THEN_VERB.match(s, end) or _SUBJECT_REPORT.match(s, end)
     if m is None:
         return False
     noun = m.group("noun").lower()
     if noun in _FUNCTION_WORDS:
         return False
-    return noun.endswith("s") if m.group("plural") else True
+    return noun.endswith("s") if m.groupdict().get("plural") else True
 
 
-def _directives(s: str, own_tool: str | None) -> tuple[list[_Raw], bool]:
-    """act and call matches in sentence s (sentence-relative), and whether any exist."""
+def _after_subject(s: str, opener: int) -> bool:
+    """Whether the adverb opener at `opener` follows a subject in its clause ("Exports now
+    run", "The job will then send"): a report, not an imperative."""
+    clo = _clause(s, opener, 0, len(s))[0]
+    m = _LAST_WORD.search(s, clo, opener)
+    return m is not None and m.group(1).lower() not in _IMPERATIVE_LEAD
+
+
+def _directives(s: str, own_tool: str | None) -> tuple[list[_Raw], list[int]]:
+    """act and call matches in sentence s (sentence-relative), and the start of every act
+    and call found, including those absorbed into a call or naming the field's own tool."""
 
     def neg(start: int) -> bool:
         return _negated(s, start, 0)
@@ -821,6 +904,9 @@ def _directives(s: str, own_tool: str | None) -> tuple[list[_Raw], bool]:
         if after in _ACT_IDIOM.get(m.group("verb").lower(), ()):
             continue
         if _heads_a_subject(s, m.group("verb"), m.end("verb")):
+            continue
+        opener = m.group("opener").lower()
+        if opener in _ADVERB_OPENERS and _after_subject(s, m.start("opener")):
             continue
         if not neg(v):
             acts.append((v, _clause(s, v, 0, len(s))[1]))
@@ -852,17 +938,60 @@ def _directives(s: str, own_tool: str | None) -> tuple[list[_Raw], bool]:
         absorbed.update(act_starts[bisect_left(act_starts, clo) : bisect_left(act_starts, chi)])
     out: list[_Raw] = [("call", a, b, False, t) for a, b, t in calls if t != own_tool]
     out.extend(("act", a, b, False, None) for a, b in acts if a not in absorbed)
-    return out, bool(calls) or bool(acts)
+    return out, sorted([a for a, _ in acts] + [c for c, _, _ in calls])
 
 
-def _conceal(s: str, has_referent: bool, directive_here: bool) -> list[_Raw]:
+# A manner phrase led by a negated gerund: "without telling the user", "not notifying".
+_GERUND_MANNER = re.compile(r"(?:without|not|never|nor)\s+(?:ever\s+)?[a-z]{3,}ing\b", _I)
+# A subject, and optionally an auxiliary, before a negated reveal: "we did not tell ...",
+# "the server does not notify ...". The reader is not being told what to do.
+_REPORT_SUBJECT = re.compile(
+    r"(?P<subj>[a-z][\w'’-]*)\s+(?:(?P<aux>did|does|do|was|were|has|have|had|is|are|will"
+    r"|would|could|can|may|might|shall|should|must)\s+)?$",
+    _I,
+)
+_PRONOUN_SUBJECTS = frozenset(
+    {"we", "they", "it", "he", "she", "i", "who", "which", "this", "nobody", "someone"}
+)
+# Subjects and leads under which a negated reveal still addresses the reader.
+_ADDRESSEE_LEAD = _IMPERATIVE_LEAD | {"assistant", "agent", "model", "ai", "llm", "bot", "there"}
+
+
+def _reported(s: str, start: int) -> bool:
+    """Whether the negated reveal at `start` is a report about someone other than the
+    reader: a pronoun subject before it, or any subject with an auxiliary."""
+    clo = _clause(s, start, 0, len(s))[0]
+    m = _REPORT_SUBJECT.search(s, max(clo, start - 40), start)
+    if m is None:
+        return False
+    subj = m.group("subj").lower()
+    if subj in _ADDRESSEE_LEAD:
+        return False
+    return bool(m.group("aux")) or subj in _PRONOUN_SUBJECTS
+
+
+def _modifies_directive(s: str, pos: int, directives: list[int]) -> bool:
+    """Whether a manner phrase at `pos` modifies a directive act or call: one in its clause,
+    or one earlier in the sentence with no semicolon between."""
+    clo, chi = _clause(s, pos, 0, len(s))
+    return any(clo <= d < chi or (d < pos and ";" not in s[d:pos]) for d in directives)
+
+
+def _conceal(s: str, has_referent: bool, directives: list[int]) -> list[_Raw]:
     """conceal-act matches in sentence s.
 
     Communication verbs (tell, mention, the awareness verbs) conceal anything but a plain
     data noun. Presentation verbs and keep/hide forms conceal only an action object, or a
     pronoun whose referent is an act or call in this or the previous sentence.
+
+    Concealment must be an instruction to the reader. A negated reveal with a subject of its
+    own ("we did not tell the user") is a report. A manner phrase ("silently", "in the
+    background", "without notifying the user") counts only when it modifies a directive act
+    or call in the sentence (`directives`, sentence-relative starts) or a pro-verb ("do it
+    quietly"); describing how software behaves is not concealment.
     """
     out: list[_Raw] = []
+    proverb = _PROVERB.search(s) is not None
 
     def told(kind: str) -> bool:
         return kind != "data"
@@ -871,7 +1000,13 @@ def _conceal(s: str, has_referent: bool, directive_here: bool) -> list[_Raw]:
         return kind == "action" or (kind == "pronoun" and has_referent)
 
     def add(m: re.Match[str]) -> None:
-        out.append(("conceal-act", m.start(), m.end(), False, None))
+        start = m.start()
+        if _GERUND_MANNER.match(s, start):
+            if not (proverb or _modifies_directive(s, start, directives)):
+                return
+        elif _reported(s, start):
+            return
+        out.append(("conceal-act", start, m.end(), False, None))
 
     for m in _REVEAL_OBJ.finditer(s):
         obj = m.group("obj")
@@ -896,10 +1031,10 @@ def _conceal(s: str, has_referent: bool, directive_here: bool) -> list[_Raw]:
             add(m)
     for m in _UNAWARE.finditer(s):
         if told(_tail_kind(m.group("tail") or m.group("tail2") or "")):
-            add(m)
+            out.append(("conceal-act", m.start(), m.end(), False, None))
     for m in _KEEP_FROM.finditer(s):
         if not _negated(s, m.start(), 0) and shown(_object_kind(m.group("obj"))):
-            add(m)
+            out.append(("conceal-act", m.start(), m.end(), False, None))
     for m in _KEEP_SECRET.finditer(s):
         obj = m.group("obj")
         if _WORD.findall(obj.lower())[-1:] in (["the"], ["a"], ["an"], ["your"], ["our"]):
@@ -907,13 +1042,15 @@ def _conceal(s: str, has_referent: bool, directive_here: bool) -> list[_Raw]:
         kind = _object_kind(obj)
         # "keep this quiet", "keep that between us": refers to what was just done or said
         if not _negated(s, m.start(), 0) and kind in ("action", "pronoun"):
-            add(m)
+            out.append(("conceal-act", m.start(), m.end(), False, None))
     for m in _CONCEAL_TRANSLATED.finditer(s):
-        add(m)
-    if directive_here or _PROVERB.search(s):
+        out.append(("conceal-act", m.start(), m.end(), False, None))
+    if directives or proverb:
         for m in _SILENT.finditer(s):
-            if not _negated(s, m.start(), 0):
-                add(m)
+            if not _negated(s, m.start(), 0) and (
+                proverb or _modifies_directive(s, m.start(), directives)
+            ):
+                out.append(("conceal-act", m.start(), m.end(), False, None))
     return out
 
 
@@ -1105,14 +1242,16 @@ def detect(
     sents = sentences(n)
     quotes = fenced(n)
     qstarts = [a for a, _ in quotes]
+    records = record_lines(n)
+    rstarts = [a for a, _ in records]
     result = Detection()
 
     def add(raw: list[_Raw], lo: int, idx: int) -> None:
+        record = _inside(records, rstarts, lo)  # a sentence never crosses a record line
         for feature, start, end, conditioned, tool in raw:
             a = lo + start
-            result.append(
-                Match(feature, a, lo + end, idx, _inside(quotes, qstarts, a), conditioned, tool)
-            )
+            quoted = _inside(quotes, qstarts, a)
+            result.append(Match(feature, a, lo + end, idx, quoted, conditioned, tool, record))
 
     prev_directive = False
     for idx, (lo, hi) in enumerate(sents):
@@ -1120,10 +1259,11 @@ def detect(
             result.complete = False
             break
         s = text[lo:hi]
-        raw, directive = _directives(s, own_tool)
+        raw, starts = _directives(s, own_tool)
+        directive = bool(starts)
         add(raw, lo, idx)
         if _ANCHOR["conceal"].search(s):
-            add(_conceal(s, directive or prev_directive, directive), lo, idx)
+            add(_conceal(s, directive or prev_directive, starts), lo, idx)
         add(_others(s), lo, idx)
         prev_directive = directive
 
