@@ -18,6 +18,7 @@ import time
 from bisect import bisect_left, bisect_right, insort
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from context_audit import lexicon as lx
 from context_audit import proximity
@@ -887,14 +888,16 @@ _OVERRIDE_NEGATIVE_FORM = re.compile(
 )
 # --- the user-approval condition -----------------------------------------------------
 #
-# By ruling (Task 16b review round 4, task-16b-findings-r3.md) the condition cancels only
-# an override of an APPROVAL step, and only in four forms: (i) a user clause whose object
-# is an anaphor, (ii) a user clause with a verb of approving, granting, giving, asking
-# for, requesting, opting for or choosing whose object's head noun is the override's own
-# target noun, (iii) asking the user before the act or first, (iv) a literal yes to a
-# confirmation or prompt. Each form is matched to the end of its clause, so a word that
-# only looks like the form ("this newsletter", "a confirmation email", "first about
-# lunch") does not cancel. Where a case is unclear the override is not cancelled.
+# By ruling (Task 16b review rounds 4 and 5) the condition cancels an override, of an
+# approval step or of an authority target, only in four forms: (i) a user clause whose
+# object is an anaphor, (ii) a user clause with a verb of approving, granting, giving,
+# asking for, requesting, opting for or choosing whose object's head noun is the override's
+# own target noun, or "asks / tells / instructs you to" + the override's own verb + that
+# target, (iii) asking the user before the act or first, (iv) a literal yes to a
+# confirmation or prompt (approval steps only). Each form is matched to the end of its
+# clause, so a word that only looks like the form ("this newsletter", "a confirmation
+# email", "first about lunch") does not cancel. Where a case is unclear the override is
+# not cancelled.
 
 _USER_SUBJECT = (
     r"(?:(?:(?:the|a|your)\s+)?(?:(?:end|current|same|human|account|repository|project)\s+)?"
@@ -923,10 +926,11 @@ _APPROVE_ANAPHOR = (  # form (i) also takes these; "gives it" is not an approval
     r"|permit(?:s|ted)?|accept(?:s|ed)?|agree(?:s|d)?\s+to|consent(?:s|ed)?\s+to"
     r"|sign(?:s|ed)?\s+off\s+on"
 )
-# "asks to skip ...", "chooses to bypass ...": the infinitive must be the override's verb.
+# "asks to skip ...", "chooses to bypass ...", "tells you to ignore ...": the infinitive
+# must be the override's verb.
 _CHOOSE_TO = (
-    r"(?:ask(?:s|ed)?|request(?:s|ed)?|cho(?:ose|oses|se|sen)|opt(?:s|ed)?|elect(?:s|ed)?)"
-    r"(?:\s+you)?\s+to\s+(?P<inf>[a-z]+)"
+    r"(?:(?:ask(?:s|ed)?|request(?:s|ed)?|cho(?:ose|oses|se|sen)|opt(?:s|ed)?|elect(?:s|ed)?)"
+    r"(?:\s+you)?|(?:tells?|told|instruct(?:s|ed)?)\s+you)\s+to\s+(?P<inf>[a-z]+)"
 )
 _USER_CLAUSE = re.compile(
     rf"{_CONDITION_OPEN}\s+{_USER_SUBJECT}(?:\s+{_AUXILIARY}){{0,3}}\s+(?:"
@@ -947,10 +951,14 @@ _CLAUSE_END = (
     r"|\s+(?:in|during|within|at|on|via|through|by|with|from|for|before|when|while|as)\b)"
 )
 _CLAUSE_END_AT = re.compile(_CLAUSE_END, _I)
+_STRICT_END = re.compile(
+    r"(?:\s+(?:already|earlier|explicitly|again|too))*\s*(?:$|[,;:.!?](?!\w)|\b(?:then|and)\b)",
+    _I,
+)
 # (i) An anaphor for the act or the overridden step, as the whole object.
 _ANAPHOR = re.compile(
     r"\s+(?:(?:this|that)\s+(?:(?:exact|same|specific|particular)\s+)?"
-    rf"(?:action|step|change|operation)|this|that|it|so|the\s+above){_CLAUSE_END}",
+    rf"(?:action|step|change|operation)|this|that|it|them|so|the\s+above){_CLAUSE_END}",
     _I,
 )
 # (iv) What may follow "said yes": the prompt it answers, then the end of the clause. An
@@ -979,8 +987,23 @@ _TARGET_PHRASE = re.compile(
     _I,
 )
 _TARGET_HEAD = re.compile(rf"\b{_HEAD}\b", _I)
-# Rule 1. An approval step is named by one of these stems; "prompt" alone is not one
-# ("ignore the prompt"). An authority target is named by one of the words below.
+# The head nouns of an authority target. In a user clause they may be preceded by a
+# determiner, an adjective of order, or a word of the override's own target ("the style
+# rules" for "ignore the style rules"); any other word makes it a different thing.
+_AUTHORITY_HEAD = re.compile(
+    r"\b(?P<head>instruction|direction|guidance|guideline|rule|directive|polic(?:y|ie)"
+    r"|constraint|restriction|setting|prompt)s?\b",
+    _I,
+)
+_AUTHORITY_LEAD = frozenset(
+    re.findall(
+        r"[a-z]+",
+        "the a an this that these those their your its all any previous prior earlier above"
+        " existing current original same usual default",
+    )
+)
+# An approval step is named by one of these stems; "prompt" alone is not one ("ignore the
+# prompt"). An authority target is named by one of the words below, or by "prompt" alone.
 _APPROVAL_STEM = re.compile(
     r"\b(?:confirm|approv|permission|consent|sign-?off|review|authori[sz]|asking)", _I
 )
@@ -1059,6 +1082,19 @@ _DETERMINERS = frozenset(
 )
 
 
+class _Target(NamedTuple):
+    """An override's target: an approval step or an authority, its head nouns, the
+    override's own verb, and the words of the override."""
+
+    approval: bool
+    heads: set[str]
+    verb: str
+    words: frozenset[str]
+
+
+_SPACED_WORD = re.compile(r"\s+(?P<w>[a-z][a-z'’-]*)", _I)
+
+
 def _head(m: re.Match[str]) -> set[str]:
     heads = {m.group("head").lower().replace("-", "")}
     step = m.groupdict().get("step")
@@ -1067,24 +1103,42 @@ def _head(m: re.Match[str]) -> set[str]:
     return heads
 
 
-def _approval_target(s: str, a: int, b: int) -> set[str] | None:
-    """The head nouns of the approval step that the override at s[a:b] skips, or None when
-    its target is an authority (instructions, rules, policy, settings, a system prompt)
-    or is not plainly an approval step."""
+def _head_noun(m: re.Match[str]) -> str:
+    head = m.group("head").lower()
+    return "policy" if head == "policie" else head
+
+
+def _override_target(s: str, a: int, b: int) -> tuple[bool, set[str]] | None:
+    """The target of the override at s[a:b]: whether it is an approval step (as opposed
+    to an authority: instructions, rules, policy, settings, a system prompt), and its head
+    nouns. None when the target is not plainly either, so that nothing cancels."""
     span = s[a:b]
-    if _AUTHORITY_WORD.search(span) or not _APPROVAL_STEM.search(span):
-        return None
+    authority = _AUTHORITY_WORD.search(span) is not None
+    if not authority and not _APPROVAL_STEM.search(span):
+        if not _AUTHORITY_HEAD.search(span):
+            return None
+        authority = True  # "ignore the prompt"
     after = _AFTER_TARGET.match(s, b)
     if after is None:
         return None  # "the approval-rules"
+    heads = {_head_noun(m) for m in _AUTHORITY_HEAD.finditer(span)}
     word = after.group("word")
     if word is not None and word.lower() not in _AFTER_TARGET_WORDS:
-        return None  # "the approval rules", "the confirmation email"
+        noun = _AUTHORITY_HEAD.fullmatch(word)
+        if noun is None:
+            return None  # "the confirmation email", "the rules committee"
+        # "the approval rules": the head is the authority noun, and it must end the target
+        after = _AFTER_TARGET.match(s, after.end())
+        if after is None or (after.group("word") or "if").lower() not in _AFTER_TARGET_WORDS:
+            return None
+        return False, {_head_noun(noun)}
+    if authority:
+        return False, heads
     end = after.end() if after.group("step") else b
-    heads: set[str] = set()
+    heads = set()
     for m in _TARGET_HEAD.finditer(s, a, end):
         heads |= _head(m)
-    return heads
+    return True, heads
 
 
 def _gerunds(verb: str) -> set[str]:
@@ -1097,36 +1151,50 @@ def _gerunds(verb: str) -> set[str]:
     return forms
 
 
-def _names_target(s: str, at: int, heads: set[str]) -> bool:
-    """Whether a noun phrase headed by one of `heads` starts at `at`."""
-    t = _TARGET_PHRASE.match(s, at)
-    return t is not None and bool(heads & _head(t))
+def _names_target(s: str, at: int, target: _Target) -> bool:
+    """Whether a noun phrase headed by one of the override's target nouns starts at `at`."""
+    if target.approval:
+        t = _TARGET_PHRASE.match(s, at)
+        return t is not None and bool(target.heads & _head(t))
+    pos = at
+    for _ in range(5):  # at most four words before the head
+        w = _SPACED_WORD.match(s, pos)
+        if w is None:
+            return False
+        h = _AUTHORITY_HEAD.fullmatch(w.group("w"))
+        if h is not None and _head_noun(h) in target.heads:
+            # no phrase after it: "instructions from strangers" are other instructions
+            return _STRICT_END.match(s, w.end()) is not None
+        if w.group("w").lower() not in _AUTHORITY_LEAD | target.words:
+            return False
+        pos = w.end()
+    return False
 
 
-def _user_clause_cancels(s: str, m: re.Match[str], verb: str, heads: set[str]) -> bool:
-    """Forms (i), (ii) and (iv) for the user clause m, whose verb ends at m.end(). `verb`
-    is the override's own verb and `heads` its target nouns."""
+def _user_clause_cancels(s: str, m: re.Match[str], target: _Target) -> bool:
+    """Forms (i), (ii) and (iv) for the user clause m, whose verb ends at m.end()."""
     end = m.end()
+    yes_target = target.approval and bool(target.heads & {"confirmation", "prompt"})
     if m.group("flag"):
-        return bool(heads & {"confirmation", "prompt"})
+        return yes_target
     if m.group("yes"):
-        return bool(heads & {"confirmation", "prompt"}) and _YES_TAIL.match(s, end) is not None
+        return yes_target and _YES_TAIL.match(s, end) is not None
     if m.group("so"):
         return _CLAUSE_END_AT.match(s, end) is not None
     if m.group("anaphor"):
         return _ANAPHOR.match(s, end) is not None
     if m.group("give"):
-        return _names_target(s, end, heads)
+        return _names_target(s, end, target)
     inf = m.group("inf")
     if inf is not None and inf.lower() == "do":
         return _ANAPHOR.match(s, end) is not None  # "asks you to do so"
-    if inf is not None and inf.lower() != verb:
+    if inf is not None and inf.lower() != target.verb:
         return False  # "asks to skip ..." for "bypass ...", "asks to review the draft"
-    return _ANAPHOR.match(s, end) is not None or _names_target(s, end, heads)
+    return _ANAPHOR.match(s, end) is not None or _names_target(s, end, target)
 
 
 def _before_cancels(
-    s: str, at: int, act_starts: list[int], ask: tuple[int, int], a: int, heads: set[str]
+    s: str, at: int, act_starts: list[int], ask: tuple[int, int], a: int, target: _Target
 ) -> int:
     """Form (iii) after "before" ending at `at`: an anaphor, the overridden step's verb with
     that step (or nothing) as its object, or the verb of an act elsewhere in the sentence
@@ -1144,7 +1212,7 @@ def _before_cancels(
     first = _WORD.match(low, a)
     if first is not None and verb in _gerunds(first.group()):
         rest = s[m.end() : end]
-        if not rest.strip() or _ANAPHOR.match(s, m.end()) or _names_target(s, m.end(), heads):
+        if not rest.strip() or _ANAPHOR.match(s, m.end()) or _names_target(s, m.end(), target):
             return end
     obj = set(_WORD.findall(low[m.end() : end])) - _DETERMINERS
     for start in act_starts:
@@ -1160,7 +1228,7 @@ def _before_cancels(
     return -1
 
 
-def _ask_first_cancels(s: str, act_starts: list[int], a: int, b: int, heads: set[str]) -> bool:
+def _ask_first_cancels(s: str, act_starts: list[int], a: int, b: int, target: _Target) -> bool:
     """Form (iii) for the override at s[a:b]."""
     for m in _ASK_USER.finditer(s):
         ask = m.start("ask")
@@ -1171,9 +1239,9 @@ def _ask_first_cancels(s: str, act_starts: list[int], a: int, b: int, heads: set
             continue  # "do not ask the user first", "if it fails, ask the user first"
         span = (m.start(), m.end())
         if m.group("when").lower() == "before":
-            end = _before_cancels(s, m.end(), act_starts, span, a, heads)
+            end = _before_cancels(s, m.end(), act_starts, span, a, target)
         elif (nxt := _FIRST_BEFORE.match(s, m.end())) is not None:
-            end = _before_cancels(s, nxt.end(), act_starts, span, a, heads)
+            end = _before_cancels(s, nxt.end(), act_starts, span, a, target)
         elif (nxt := _FIRST_THEN.match(s, m.end())) is not None:
             # "first, then <the override, or an act joined to it>": no other clause between
             end = nxt.end() if a >= nxt.end() and not _BREAK.search(s, nxt.end(), a) else -1
@@ -1192,19 +1260,22 @@ def _ask_first_cancels(s: str, act_starts: list[int], a: int, b: int, heads: set
 
 def _conditioned(s: str, act_starts: list[int], a: int, b: int) -> bool:
     """Whether the override at s[a:b] is conditioned on the user's own approval of it, by
-    the four forms of the round-4 ruling (see the section comment above)."""
-    heads = _approval_target(s, a, b)
-    if heads is None:
+    the four forms of the ruling (see the section comment above)."""
+    found = _override_target(s, a, b)
+    if found is None:
         return False
-    first = _WORD.match(s.lower(), a)
-    verb = first.group() if first is not None else ""
+    low = s[a:b].lower()
+    first = _WORD.match(low)
+    target = _Target(
+        found[0], found[1], first.group() if first else "", frozenset(_WORD.findall(low))
+    )
     for m in _USER_CLAUSE.finditer(s):
         lo, hi = (m.end(), a) if a >= m.end() else (b, m.start())
         if lo <= hi and _ELSE_BRANCH.search(s, lo, hi):
             continue  # the approval and the override are in different branches
-        if _user_clause_cancels(s, m, verb, heads):
+        if _user_clause_cancels(s, m, target):
             return True
-    return _ask_first_cancels(s, act_starts, a, b, heads)
+    return _ask_first_cancels(s, act_starts, a, b, target)
 
 
 # --- prefilter: anchor words without which a feature's patterns cannot match ---------
