@@ -76,6 +76,9 @@ def scan_fields(
     alt_fields: dict[int, Field] = {}
     alt_matches: dict[int, list[Match]] = {}
     reason = ""
+    # The directive context carries into the next sibling block of the same result (same
+    # source, next block), the adjacency judging uses; independent fields never combine.
+    last: tuple[Field, bool, bool] | None = None  # field, last_directive (primary, alternate)
     for f in fields:
         if len(scanned) >= budget.max_fields:
             reason = "field-budget"
@@ -89,7 +92,13 @@ def scan_fields(
             f = replace(f, text=text)
             size = len(text.encode("utf-8", "surrogatepass"))
         n = normalize(f)
-        found = detect(f, n, own_tool=own_tool, deadline=deadline)
+        sibling = last is not None and (last[0].source_id, last[0].block + 1) == (
+            f.source_id,
+            f.block,
+        )
+        before, before_alt = (last[1], last[2]) if sibling and last is not None else (False, False)
+        found = detect(f, n, own_tool=own_tool, deadline=deadline, prev_directive=before)
+        after_alt = found.last_directive
         idx = len(scanned)
         matches[idx] = list(found)
         scanned.append(f)
@@ -97,10 +106,14 @@ def scan_fields(
         complete = found.complete
         if complete and has_second_reading(n):
             alt = replace(f, reading="alternate")
-            alt_found = detect(alt, normalize(alt), own_tool=own_tool, deadline=deadline)
+            alt_found = detect(
+                alt, normalize(alt), own_tool=own_tool, deadline=deadline, prev_directive=before_alt
+            )
             alt_fields[idx] = alt
             alt_matches[idx] = list(alt_found)
             complete = alt_found.complete
+            after_alt = alt_found.last_directive
+        last = (f, found.last_directive, after_alt)
         if not complete:
             reason = "time-budget"
             break

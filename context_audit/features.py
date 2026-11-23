@@ -53,6 +53,7 @@ class Detection(list[Match]):
     """
 
     complete: bool = True
+    last_directive: bool = False  # whether the last sentence scanned held a directive
 
 
 _I = re.IGNORECASE
@@ -63,6 +64,9 @@ _NEGATOR = re.compile(
     rf"\b(?:not|never|no|nothing|nor|cannot|(?:do|does|did|wo|ca|should|must){_A}?n{_A}t)\b",
     _I,
 )
+# Recognised reminder openers that carry a negator but introduce a positive instruction
+# ("Do not forget to submit ..."): the negator is part of the opener, not of the action.
+_NEGATED_REMINDER = re.compile(rf"(?:don{_A}t|do\s+not)\s+forget\s+to", _I)
 _CLAUSE_BREAK = re.compile(r"[,;:]|\bbut\b", _I)
 _LOOKBACK = 60
 
@@ -1315,7 +1319,10 @@ def _negated(text: str, start: int, floor: int) -> bool:
     cut = 0
     for b in _CLAUSE_BREAK.finditer(window):
         cut = b.end()
-    return _NEGATOR.search(window, cut) is not None
+    reminders = [(r.start(), r.end()) for r in _NEGATED_REMINDER.finditer(window, cut)]
+    return any(
+        not any(a <= n.start() < b for a, b in reminders) for n in _NEGATOR.finditer(window, cut)
+    )
 
 
 _BREAK = re.compile(r"[,;:]|\.(?=[A-Z])")  # ".X": sentences glued by removed characters
@@ -1925,8 +1932,13 @@ def detect(
     *,
     own_tool: str | None = None,
     deadline: float | None = None,
+    prev_directive: bool = False,
 ) -> Detection:
     """Feature matches in one normalized field. A negated feature produces no match.
+
+    `prev_directive` says the sentence just before this field (the end of the previous
+    sibling block of the same result) held a directive, as `Detection.last_directive`
+    reports it.
 
     `deadline` is a `time.monotonic()` value; once it passes, checked between sentences,
     scanning stops and the result has `complete = False`. Hidden-character matches are
@@ -1953,7 +1965,6 @@ def detect(
         gap = n.source[n.origin[pos - 1] + 1 : n.origin[pos]]
         return bool(gap) and not gap.isspace()
 
-    prev_directive = False
     announced = False  # the current list's lead-in announces things, not steps
     for idx, (s_lo, s_hi) in enumerate(sents):
         is_item = _LIST_LINE.match(text, s_lo) is not None
@@ -1992,6 +2003,7 @@ def detect(
         if not result.complete:
             break
         prev_directive = directive_here
+    result.last_directive = prev_directive
 
     sstarts = [a for a, _ in sents]
     for h_start, h_end, _kind in n.hidden:
