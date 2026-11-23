@@ -55,6 +55,10 @@ class Scenario:
     # Let the CLI read user, project, and local settings and instruction files, as it does by
     # default. Only the isolation canary wants this.
     load_outside_settings: bool = False
+    # Passed as --plugin-dir: a plugin to load for this run.
+    plugin_dir: Path | None = None
+    # Extra environment for the CLI and its hooks; "{run_dir}" in a value becomes the run directory.
+    env: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

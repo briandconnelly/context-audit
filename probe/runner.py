@@ -78,9 +78,12 @@ def prepare(
         argv += ["--setting-sources", ""]
     argv += ["--settings", str(settings), "--mcp-config", str(mcp), "--strict-mcp-config"]
     argv += ["--debug-file", str(run_dir / "debug.log")]
+    if s.plugin_dir is not None:
+        argv += ["--plugin-dir", str(s.plugin_dir)]
     if s.allowed_tools:
         argv += ["--allowedTools", *s.allowed_tools]
-    return Prepared(argv, {"ANTHROPIC_BASE_URL": stub_url}, hook_log, counter)
+    env = {k: v.replace("{run_dir}", str(run_dir)) for k, v in s.env.items()}
+    return Prepared(argv, {**env, "ANTHROPIC_BASE_URL": stub_url}, hook_log, counter)
 
 
 def collect(

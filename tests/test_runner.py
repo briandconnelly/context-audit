@@ -183,3 +183,18 @@ def test_outside_settings_are_excluded_unless_a_scenario_asks(tmp_path):
     assert default.argv[default.argv.index("--setting-sources") + 1] == ""
     loading = Scenario("t", "c", [], [], load_outside_settings=True)
     assert "--setting-sources" not in runner.prepare(loading, tmp_path, "http://127.0.0.1:1").argv
+
+
+def test_plugin_dir_and_env_reach_the_command(tmp_path):
+    from dataclasses import replace
+
+    s = replace(scenario(), plugin_dir=Path("/plug in"), env={"A": "{run_dir}/state"})
+    prepared = runner.prepare(s, tmp_path, "http://127.0.0.1:1")
+    i = prepared.argv.index("--plugin-dir")
+    assert prepared.argv[i + 1] == "/plug in"
+    assert prepared.extra_env["A"] == f"{tmp_path}/state"
+    assert prepared.extra_env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:1"
+
+
+def test_no_plugin_dir_by_default(tmp_path):
+    assert "--plugin-dir" not in runner.prepare(scenario(), tmp_path, "http://127.0.0.1:1").argv
