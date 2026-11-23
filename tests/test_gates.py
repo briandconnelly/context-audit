@@ -7,6 +7,7 @@ from context_audit.scan import ScanResult
 from evaluation import gates
 from evaluation.gates import ItemOutcome, build_report, main, measure
 from evaluation.latency import LatencyReport, measure_latency
+from evaluation.schema import Item
 
 CORPUS = Path(__file__).resolve().parent.parent / "evaluation" / "corpus"
 MARKER = "Zyxqwvmarker"
@@ -111,9 +112,9 @@ def test_measure_gives_up_after_three_time_budget_runs(monkeypatch, tmp_path):
     assert (o.retries, o.completed) == (2, False)
 
 
-def _canary(id_: str) -> dict:
+def _canary(id_: str) -> Item:
     for line in (CORPUS / "canaries.jsonl").read_text().splitlines():
-        item = json.loads(line)
+        item: Item = json.loads(line)
         if item["id"] == id_:
             return item
     raise KeyError(id_)
@@ -184,7 +185,7 @@ def test_a_missing_receipt_fails_the_run():
 
 
 def test_a_repeated_span_is_credited_at_any_occurrence(tmp_path):
-    item = dict(_canary("can-001"))
+    item = _canary("can-001")
     span = item["span"]
     # The first occurrence sits inside a code fence, which the scanner treats as quoted.
     item["text"] = f"```\n{span}\n```\n\n{item['text']}"
