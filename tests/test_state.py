@@ -142,20 +142,51 @@ def test_version_constants():
     assert context_audit.RULE_VERSION == 1
 
 
-def test_key_is_never_visible_half_written(tmp_path, monkeypatch):
-    """A concurrent reader outside the lock must see no key or a whole key, never an
-    empty one: the key appears under its name only after all 32 bytes are written."""
+def test_key_is_never_visible_half_written(tmp_path):
+    """Every observation of the key path while state.py runs is "missing" or a whole
+    32-byte key, whatever order the creation code writes in."""
+    import sys
+
     from context_audit import state
 
+    key = tmp_path / "key"
     seen = []
-    real = state.secrets.token_bytes
 
-    def probe(n):
-        seen.append((tmp_path / "key").exists())
-        return real(n)
+    def look(frame, event, arg):
+        if frame.f_code.co_filename == state.__file__ and event in ("line", "return"):
+            try:
+                seen.append(len(key.read_bytes()))
+            except FileNotFoundError:
+                seen.append(None)
+        return look
 
-    monkeypatch.setattr(state.secrets, "token_bytes", probe)
+    def tracer(frame, event, arg):
+        return look if frame.f_code.co_filename == state.__file__ else None
+
+    sys.settrace(tracer)
+    try:
+        state.span_digest(tmp_path, "x")
+    finally:
+        sys.settrace(None)
+    assert None in seen and 32 in seen
+    assert set(seen) <= {None, 32}, seen
+
+
+def test_key_is_created_without_hard_links(tmp_path, monkeypatch):
+    from context_audit import state
+
+    def no_link(*a, **k):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(state.os, "link", no_link)
     state.span_digest(tmp_path, "x")
-    assert seen == [False]
     assert len((tmp_path / "key").read_bytes()) == 32
-    assert [p.name for p in tmp_path.iterdir() if p.name.startswith("key")] == ["key"]
+    assert sorted(p.name for p in tmp_path.iterdir() if p.name.startswith("key")) == ["key"]
+
+
+def test_stale_key_temp_file_is_removed(tmp_path):
+    from context_audit import state
+
+    (tmp_path / "key.99999.tmp").write_bytes(b"")
+    state.span_digest(tmp_path, "x")
+    assert sorted(p.name for p in tmp_path.iterdir() if p.name.startswith("key")) == ["key"]

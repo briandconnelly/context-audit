@@ -70,15 +70,18 @@ def _key(root: Path) -> bytes:
         key = path.read_bytes()
     except FileNotFoundError:
         with _locked(root):
+            for stale in root.glob("key.*.tmp"):
+                stale.unlink(missing_ok=True)
             if not path.exists():
-                # Write the key under a temporary name and link it into place, so a
-                # reader outside the lock never sees an empty or partial key.
+                # Write the whole key under a temporary name, then rename it into place
+                # (no hard links needed), so a reader outside the lock never sees an
+                # empty or partial key. Creators are serialized by the lock.
                 tmp = root / f"key.{os.getpid()}.tmp"
                 fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
                 try:
                     with os.fdopen(fd, "wb") as f:
                         f.write(secrets.token_bytes(32))
-                    os.link(tmp, path)
+                    os.replace(tmp, path)
                 finally:
                     tmp.unlink(missing_ok=True)
             key = path.read_bytes()
