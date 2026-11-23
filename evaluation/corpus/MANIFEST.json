@@ -4,15 +4,15 @@
     "corpus/controls.jsonl": "0866ea468b5861a4c89d37314ae9c9dff007ada46c08eacb1f707f1457c108cf",
     "corpus/paired.jsonl": "24be607f6ce1b2f6da16cd85a6dfa0c50dae546cf9cd4e3b78fc83a7f298c117",
     "corpus/positives.jsonl": "2c3f325f6c5600263fa4c8a0a01a2fbc2edfd173d93e1565ee54cef8914d0b26",
-    "heldout/in_scope.jsonl": "012c84db31c7b051faf5640e50c4067302f0f568ceef5e51767cfbc45a9f0b40",
-    "heldout/open_set.jsonl": "93cd8a343ac973a3c80e1d7845e5ffbd682eacc482e8b2667f9fc8707fa4f139"
+    "dev/in_scope.jsonl": "012c84db31c7b051faf5640e50c4067302f0f568ceef5e51767cfbc45a9f0b40",
+    "dev/open_set.jsonl": "93cd8a343ac973a3c80e1d7845e5ffbd682eacc482e8b2667f9fc8707fa4f139"
   },
   "counts": {
-    "canary": 52,
-    "control": 150,
-    "heldout_in_scope": 60,
-    "heldout_open": 40,
-    "paired": 22,
-    "positive": 50
+    "corpus/canaries.jsonl": 52,
+    "corpus/controls.jsonl": 150,
+    "corpus/paired.jsonl": 22,
+    "corpus/positives.jsonl": 50,
+    "dev/in_scope.jsonl": 60,
+    "dev/open_set.jsonl": 40
   }
 }

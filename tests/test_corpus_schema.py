@@ -4,12 +4,17 @@ from collections import Counter, defaultdict
 
 from evaluation.schema import (
     CORPUS_FILES,
+    DEV_FILES,
     EVAL_DIR,
     PROVIDERS,
     Item,
+    file_problems,
+    is_dev_b,
     load,
     load_all,
+    load_dev_a,
     manifest,
+    share_problems,
     validate,
 )
 
@@ -88,14 +93,50 @@ def test_motivating_canary_is_high_on_tool_result():
     assert hits[0]["id"] == "can-001"
 
 
-def test_no_provider_or_template_dominates():
-    by_set: dict[str, list[Item]] = defaultdict(list)
-    for item in load_all():
-        by_set[item["set"]].append(item)
-    for name, items in by_set.items():
-        for key in ("provider", "template"):
-            top, count = Counter(i[key] for i in items).most_common(1)[0]
-            assert count / len(items) <= 0.2, (name, key, top, count)
+def test_no_provider_or_template_dominates_any_file():
+    assert file_problems() == []
+
+
+def test_the_share_rule_is_checked_per_file():
+    good = load(CORPUS_FILES["canary"])[0]
+    five = [{**good, "id": f"can-90{n}", "template": f"t0{n}"} for n in range(5)]
+    assert share_problems(five) == [f"provider {good['provider']!r} holds 5 of 5 items"]
+    spread = [{**g, "provider": p} for g, p in zip(five, PROVIDERS, strict=False)]
+    assert share_problems(spread) == []
+
+
+def _heldout_control(**over) -> dict:
+    good = load(CORPUS_FILES["control"])[0]
+    return {**good, "id": "hct-001", "set": "heldout_control", "template": "g01", **over}
+
+
+def test_heldout_controls_are_a_set_expecting_none_or_review():
+    assert validate([_heldout_control()]) == []
+    assert validate([_heldout_control(expected="review")]) == []
+    assert validate([_heldout_control(expected="high", span="a")])
+    assert validate([_heldout_control(id="ctl-999")])
+
+
+def test_heldout_templates_are_h_or_g_01_to_14():
+    for template in ("h01", "h14", "g01", "g14"):
+        assert validate([_heldout_control(template=template)]) == [], template
+    for template in ("t01", "g15", "h00", "g00"):
+        assert validate([_heldout_control(template=template)]), template
+
+
+def test_dev_files_hold_the_spent_round_one_set():
+    for path in DEV_FILES.values():
+        assert path.exists()
+    sets = {i["set"] for p in DEV_FILES.values() for i in load(p)}
+    assert sets == {"heldout_in_scope", "heldout_open"}
+
+
+def test_dev_b_is_every_in_scope_id_divisible_by_three():
+    assert is_dev_b("his-003") and is_dev_b("his-060")
+    assert not is_dev_b("his-001") and not is_dev_b("hop-003")
+    dev_a = load_dev_a()
+    assert len(dev_a) == 40
+    assert not any(is_dev_b(i["id"]) for i in dev_a)
 
 
 def test_paired_items_differ_only_in_authorization_note():
@@ -128,6 +169,6 @@ def test_no_real_vendor_names():
 
 def test_heldout_files_are_optional():
     names = set(manifest()["files"])
-    for path in CORPUS_FILES.values():
+    for path in (*CORPUS_FILES.values(), *DEV_FILES.values()):
         assert str(path.relative_to(EVAL_DIR)) in names
-    assert all(n.startswith(("corpus/", "heldout/")) for n in names)
+    assert all(n.startswith(("corpus/", "dev/", "heldout/")) for n in names)

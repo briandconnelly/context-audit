@@ -12,9 +12,16 @@ After the freeze commit, a corpus file changes only by a commit whose message be
 - `corpus/positives.jsonl`: rewordings of the high combinations, expected `high`, plus a few hidden-payload carriers expected `review`.
 - `corpus/controls.jsonl`: matched controls, expected `none` or `review`.
 - `corpus/paired.jsonl`: pairs of identical items whose `note` labels one authorized and one unauthorized.
-- `heldout/in_scope.jsonl` and `heldout/open_set.jsonl`: written by a separate author, optional until they exist.
-- `corpus/MANIFEST.json`: SHA-256 of every corpus and held-out file that exists, and the item count per set.
-- `schema.py`: `load`, `load_all`, `validate`, and the manifest writer.
+- `dev/in_scope.jsonl` and `dev/open_set.jsonl`: the round-1 held-out set, now spent and used as development data.
+  Its items keep their original ids and `set` values (`heldout_in_scope`, `heldout_open`).
+  Detectors were tuned against it, so its recall supports no recall claim; `gates.py` reports it ungated.
+  It is split into dev-A and dev-B: dev-B is every in-scope item whose id number is divisible by 3 (20 items), kept unread as an over-fitting check; dev-A is the other 40.
+  `schema.load_dev_a()` loads dev-A without returning dev-B text.
+- `heldout/in_scope.jsonl`, `heldout/open_set.jsonl` and `heldout/controls.jsonl`: a fresh held-out set written by a separate author and kept out of the repository until it is measured.
+  When `heldout/in_scope.jsonl` or `heldout/controls.jsonl` is absent, its gate is reported `not measured` and the gate run fails.
+  `gates.py` prints only ids and counts for anything under `heldout/`.
+- `corpus/MANIFEST.json`: SHA-256 of every corpus, development and held-out file that exists, and the item count per file.
+- `schema.py`: `load`, `load_all`, `load_dev_a`, `validate`, `file_problems`, and the manifest writer.
 
 Regenerate the manifest after any permitted change with `uv run python -m evaluation.schema --write-manifest`.
 It refuses to write while any item is invalid.
@@ -27,7 +34,7 @@ Every item has exactly these required keys, plus only the optional keys listed b
 | Key | Type | Allowed values |
 | --- | --- | --- |
 | `id` | string | `<prefix>-NNN` with a three-digit number, unique across all files; the prefix is set by `set` (below) |
-| `set` | string | `canary` (`can`), `positive` (`pos`), `control` (`ctl`), `paired` (`par`), `heldout_in_scope` (`his`), `heldout_open` (`hop`) |
+| `set` | string | `canary` (`can`), `positive` (`pos`), `control` (`ctl`), `paired` (`par`), `heldout_in_scope` (`his`), `heldout_open` (`hop`), `heldout_control` (`hct`, expected `none` or `review`) |
 | `surface` | string | `tool_result`, `tool_error`, `tool_description`, `param_description`, `server_instructions`, `skill`, `command`, `agent`, `hook_prompt`, `frontmatter` |
 | `entry` | string | `hook` when `surface` is `tool_result` or `tool_error`, otherwise `scan` |
 | `text` | string | the third-party text exactly as it would reach the agent; non-empty |
@@ -71,8 +78,8 @@ Example domains use the reserved `.example` top-level domain.
 ## Template ids
 
 A template id is an opaque split label used to check that results do not hinge on one authoring skeleton.
-The frozen corpus uses `t01` to `t14`; held-out authors use `h01` to `h14`, so the two never share a template.
-Within each set, no provider and no template may hold more than a fifth of the items.
+The frozen corpus uses `t01` to `t14`; held-out authors use `h01` to `h14` or `g01` to `g14`, so the corpus and a held-out set never share a template.
+Within each file, no provider and no template may hold more than a fifth of the items.
 
 ## Labelling notes
 

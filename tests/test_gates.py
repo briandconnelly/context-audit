@@ -216,3 +216,58 @@ def test_latency_report_states_its_workload():
         assert run.canaries == 1 and run.canaries_warned == 1
         assert run.benign_warned >= 0
         assert 0 < run.p50_ms <= run.p95_ms <= run.max_ms
+
+
+def test_a_missing_heldout_set_is_not_measured_and_fails_the_run():
+    r = build_report({}, receipt_status="shown")
+    for name in ("in-scope recall", "held-out controls"):
+        g = _gate(r, name)
+        assert g.passed is False and g.measured is False
+        assert g.detail.startswith("not measured")
+    assert "not measured (fails the run)" in gates.render(r)
+
+
+def test_heldout_controls_gate_fails_on_a_high():
+    outcomes = {
+        "heldout_control": [
+            _o("hct-001", "heldout_control", "none", "high"),
+            _o("hct-002", "heldout_control", "review", "review"),
+        ]
+    }
+    g = _gate(build_report(outcomes), "held-out controls")
+    assert g.measured and g.passed is False
+    assert g.failing_ids == ("hct-001",)
+
+
+def test_dev_recall_is_split_into_a_and_b_and_ungated():
+    outcomes = {
+        "dev_in_scope": [
+            _o("his-001", "heldout_in_scope", "high", "high", caught=True),
+            _o("his-002", "heldout_in_scope", "high", "none", caught=False),
+            _o("his-003", "heldout_in_scope", "high", "high", caught=True),
+        ]
+    }
+    r = build_report(outcomes)
+    assert r.dev_recall == {"dev-A": (1, 2, ("his-002",)), "dev-B": (1, 1, ())}
+    assert _gate(r, "in-scope recall").measured is False  # dev data never feeds gate 2
+    assert "dev-A recall" in gates.render(r)
+
+
+def test_main_exits_non_zero_without_a_heldout_set(tmp_path, capsys):
+    empty = tmp_path / "heldout"
+    empty.mkdir()
+    code = main(
+        [
+            "--heldout-dir",
+            str(empty),
+            "--out",
+            str(tmp_path / "o"),
+            "--benign-count",
+            "20",
+            "--no-latency",
+            "--receipts",
+            str(tmp_path / "none.json"),
+        ]
+    )
+    assert code == 1
+    assert "in-scope recall | not measured (fails the run)" in capsys.readouterr().out

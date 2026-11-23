@@ -6,6 +6,9 @@ This is the only code that reads the held-out sets, and it never reports their t
 `measure` reduces each item to an `ItemOutcome`, which holds ids, labels, and counts and
 no text or span, and everything printed or written is built from outcomes alone. Errors
 are reported by exception type only, because a message can quote its input.
+
+The development sets under `dev/` are the spent round-1 held-out set. Their recall is
+reported ungated, split into dev-A and dev-B, and supports no recall claim.
 """
 
 from __future__ import annotations
@@ -22,10 +25,11 @@ from context_audit.catch import BLOCK_SEPARATOR, caught
 from context_audit.selftest import run_item, top_severity
 from evaluation import benign
 from evaluation.latency import LatencyReport, measure_latency
-from evaluation.schema import CORPUS_FILES, EVAL_DIR, HELDOUT_FILES, Item
+from evaluation.schema import CORPUS_FILES, DEV_FILES, EVAL_DIR, HELDOUT_FILES, Item, is_dev_b
 
 ROOT = EVAL_DIR.parent
 HELDOUT_DIR = EVAL_DIR / "heldout"
+DEV_DIR = EVAL_DIR / "dev"
 RECEIPTS = ROOT / "runs" / "task12-receipts-state-r1" / "receipts.json"
 DEFAULT_OUT = ROOT / "runs" / "task13-gates"
 ATTEMPTS = 3
@@ -71,6 +75,7 @@ class GateResult:
     denominator: int
     failing_ids: tuple[str, ...]
     detail: str = ""
+    measured: bool = True  # False with passed False: a required input is missing
 
 
 @dataclass(frozen=True)
@@ -84,6 +89,8 @@ class GateReport:
     errors: tuple[str, ...]
     repeated_spans: int = 0
     open_set: dict[str, dict[str, int]] = field(default_factory=dict)  # expected -> top -> n
+    dev_open_set: dict[str, dict[str, int]] = field(default_factory=dict)
+    dev_recall: dict[str, tuple[int, int, tuple[str, ...]]] = field(default_factory=dict)
     positives_recall: tuple[int, int, tuple[str, ...]] = (0, 0, ())
     by_surface: dict[str, dict[str, list[int]]] = field(default_factory=dict)  # set -> [ok, n]
     by_family: dict[str, dict[str, list[int]]] = field(default_factory=dict)
@@ -149,6 +156,22 @@ def _no_high(name: str, outcomes: list[ItemOutcome]) -> GateResult:
     return GateResult(name, n > 0 and not fails, n - len(fails), n, fails, "items with no high")
 
 
+def _not_measured(name: str, what: str) -> GateResult:
+    return GateResult(name, False, 0, 0, (), f"not measured: {what} missing", measured=False)
+
+
+def _recall(outcomes: list[ItemOutcome]) -> tuple[int, int, tuple[str, ...]]:
+    fails = _failed(outcomes, lambda o: not o.ok)
+    return len(outcomes) - len(fails), len(outcomes), fails
+
+
+def _open_table(outcomes: list[ItemOutcome]) -> dict[str, dict[str, int]]:
+    table: dict[str, dict[str, int]] = defaultdict(lambda: {"high": 0, "review": 0, "none": 0})
+    for o in outcomes:
+        table[o.expected][o.top] += 1
+    return dict(table)
+
+
 def _breakdown(outcomes: dict[str, list[ItemOutcome]], key: str) -> dict[str, dict[str, list[int]]]:
     out: dict[str, dict[str, list[int]]] = {}
     for set_name, items in outcomes.items():
@@ -179,20 +202,25 @@ def build_report(
             "canaries with their expected outcome through their entry point",
         )
     ]
-    his = get("heldout_in_scope")
-    hfail = _failed(his, lambda o: not o.ok)
-    recalled = len(his) - len(hfail)
-    gates.append(
-        GateResult(
-            "in-scope recall",
-            bool(his) and recalled / len(his) >= RECALL_FLOOR,
-            recalled,
-            len(his),
-            hfail,
-            f"high finding locating the span; floor {RECALL_FLOOR:.0%}",
+    if "heldout_in_scope" in outcomes:
+        recalled, n, hfail = _recall(outcomes["heldout_in_scope"])
+        gates.append(
+            GateResult(
+                "in-scope recall",
+                bool(n) and recalled / n >= RECALL_FLOOR,
+                recalled,
+                n,
+                hfail,
+                f"high finding locating the span; floor {RECALL_FLOOR:.0%}",
+            )
         )
-    )
+    else:
+        gates.append(_not_measured("in-scope recall", "heldout/in_scope.jsonl"))
     gates.append(_no_high("controls", get("control")))
+    if "heldout_control" in outcomes:
+        gates.append(_no_high("held-out controls", outcomes["heldout_control"]))
+    else:
+        gates.append(_not_measured("held-out controls", "heldout/controls.jsonl"))
     gates.append(_no_high("benign", get("benign")))
     gates.append(_latency_gate(latency))
     gates.append(
@@ -208,9 +236,7 @@ def build_report(
         )
     )
     ben = get("benign")
-    open_set: dict[str, dict[str, int]] = defaultdict(lambda: {"high": 0, "review": 0, "none": 0})
-    for o in get("heldout_open"):
-        open_set[o.expected][o.top] += 1
+    dev = get("dev_in_scope")
     pos = [o for o in get("positive") if o.expected == "high"]
     pfail = _failed(pos, lambda o: not o.ok)
     every = [o for items in outcomes.values() for o in items]
@@ -223,7 +249,12 @@ def build_report(
         never_completed=_failed(every, lambda o: not o.completed and not o.error),
         errors=_failed(every, lambda o: o.error is not None),
         repeated_spans=sum(1 for o in every if o.span_repeated),
-        open_set=dict(open_set),
+        open_set=_open_table(get("heldout_open")),
+        dev_open_set=_open_table(get("dev_open")),
+        dev_recall={
+            "dev-A": _recall([o for o in dev if not is_dev_b(o.id)]),
+            "dev-B": _recall([o for o in dev if is_dev_b(o.id)]),
+        },
         positives_recall=(len(pos) - len(pfail), len(pos), pfail),
         by_surface=_breakdown(outcomes, "surface"),
         by_family=_breakdown(outcomes, "family"),
@@ -270,14 +301,18 @@ def _receipt_status(path: Path) -> str | None:
 def run_gates(
     *,
     heldout_dir: Path = HELDOUT_DIR,
+    dev_dir: Path = DEV_DIR,
     benign_seed: int = benign.DEFAULT_SEED,
     benign_count: int = benign.DEFAULT_COUNT,
     receipts: Path = RECEIPTS,
     latency: LatencyReport | None = None,
 ) -> GateReport:
     sources: dict[str, list[Item]] = {k: _load_jsonl(p) for k, p in CORPUS_FILES.items()}
+    for k, p in DEV_FILES.items():
+        sources[k] = _load_jsonl(dev_dir / p.name)
     for k, p in HELDOUT_FILES.items():
-        sources[k] = _load_jsonl(heldout_dir / p.name)
+        if (heldout_dir / p.name).exists():
+            sources[k] = _load_jsonl(heldout_dir / p.name)
     sources["benign"] = benign.generate(benign_seed, benign_count)
     with tempfile.TemporaryDirectory(prefix="ca-gates-") as tmp:
         outcomes = {k: [measure(i, Path(tmp)) for i in items] for k, items in sources.items()}
@@ -288,7 +323,10 @@ def render(report: GateReport) -> str:
     """Plain-text summary built from outcomes only."""
     lines = ["gate | passed | n/d | failing ids"]
     for g in report.gates:
-        mark = "not measured" if g.passed is None else "PASS" if g.passed else "FAIL"
+        if not g.measured:
+            mark = "not measured (fails the run)"
+        else:
+            mark = "not measured" if g.passed is None else "PASS" if g.passed else "FAIL"
         ids = ", ".join(g.failing_ids) or "-"
         lines.append(f"{g.name} | {mark} | {g.numerator}/{g.denominator} | {ids}")
         if g.detail:
@@ -299,7 +337,13 @@ def render(report: GateReport) -> str:
         f"review findings per 100 benign results: {report.review_per_100_benign}",
         f"benign results with any finding: {report.benign_with_findings}/{report.benign_count}",
         f"open positives recall: {p[0]}/{p[1]}; missed: {', '.join(p[2]) or '-'}",
-        f"open set (expected -> produced): {json.dumps(report.open_set, sort_keys=True)}",
+        f"held-out open set (expected -> produced): {json.dumps(report.open_set, sort_keys=True)}",
+        f"dev open set (expected -> produced): {json.dumps(report.dev_open_set, sort_keys=True)}",
+        *(
+            f"{name} recall (development, ungated, no claim): {r[0]}/{r[1]};"
+            f" missed: {', '.join(r[2]) or '-'}"
+            for name, r in report.dev_recall.items()
+        ),
         f"items retried for time budget: {len(report.retried)} {list(report.retried)}",
         f"items never completed: {len(report.never_completed)} {list(report.never_completed)}",
         f"items that raised: {len(report.errors)} {list(report.errors)}",
@@ -311,6 +355,7 @@ def render(report: GateReport) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m evaluation.gates")
     parser.add_argument("--heldout-dir", type=Path, default=HELDOUT_DIR)
+    parser.add_argument("--dev-dir", type=Path, default=DEV_DIR)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     parser.add_argument("--benign-seed", type=int, default=benign.DEFAULT_SEED)
     parser.add_argument("--benign-count", type=int, default=benign.DEFAULT_COUNT)
@@ -320,6 +365,7 @@ def main(argv: list[str] | None = None) -> int:
     latency = None if args.no_latency else measure_latency()
     report = run_gates(
         heldout_dir=args.heldout_dir,
+        dev_dir=args.dev_dir,
         benign_seed=args.benign_seed,
         benign_count=args.benign_count,
         receipts=args.receipts,
