@@ -885,93 +885,326 @@ _OVERRIDE_NEGATIVE_FORM = re.compile(
     r"[^.;]{0,20}?\b(?:user|approval|confirmation|permission|consent|sign-?off)\b",
     _I,
 )
-# The user's own approval, request or instruction, by form: a conditional or temporal
-# clause whose subject is the user (or "they", the requester, the operator) with a verb of
-# approving, asking, requesting, confirming, opting, choosing, enabling or instructing, in
-# either order relative to the override; its passive ("once approved by the user", "when
-# explicitly requested"); or a directive to ask or confirm with the user.
+# --- the user-approval condition -----------------------------------------------------
+#
+# By ruling (Task 16b review round 4, task-16b-findings-r3.md) the condition cancels only
+# an override of an APPROVAL step, and only in four forms: (i) a user clause whose object
+# is an anaphor, (ii) a user clause with a verb of approving, granting, giving, asking
+# for, requesting, opting for or choosing whose object's head noun is the override's own
+# target noun, (iii) asking the user before the act or first, (iv) a literal yes to a
+# confirmation or prompt. Each form is matched to the end of its clause, so a word that
+# only looks like the form ("this newsletter", "a confirmation email", "first about
+# lunch") does not cancel. Where a case is unclear the override is not cancelled.
+
 _USER_SUBJECT = (
-    r"(?:(?:(?:the|a|your)\s+)?(?:user|users|requester|operator|owner|customer|human)s?|they)"
+    r"(?:(?:(?:the|a|your)\s+)?(?:(?:end|current|same|human|account|repository|project)\s+)?"
+    r"(?:user|users|requester|operator|owner|customer|human)s?|they)"
 )
-_APPROVING = (
-    r"(?:approv|ask|request|confirm|opt|choos|chose|select|enabl|instruct|agree|consent"
-    r"|authori[sz]|allow|permit|want|said\s+yes|passed\s+--?yes)\w*"
-)
+# A condition that holds when the user has approved. "unless" and "until" hold when the
+# user has not, and "even if", "except if" and "not if" do not make approval the condition.
 _CONDITION_OPEN = (
-    r"(?:if|when|whenever|once|since|after|unless|until|provided(?:\s+that)?"
-    r"|as\s+long\s+as)"
+    r"(?<!\beven\s)(?<!\bexcept\s)(?<!\bnot\s)(?<!\bas\s)(?<!\bask\s)(?<!\bcheck\s)"
+    r"\b(?:if|when|whenever|once|since|after|provided(?:\s+that)?|as\s+long\s+as)"
+)
+# Between the subject and its verb only these: a negator, "fails to" or a second subject
+# ("the user's manager") there means it is not the user's approval.
+_AUXILIARY = (
+    r"(?:has|have|had|did|does|just|already|explicitly|expressly|clearly|previously|now|also"
+    r"|since|then|later|earlier|recently|personally|directly|specifically|actually|first)"
+)
+# Verbs that take the approved thing as a direct object, or through a fixed preposition.
+_GIVE = r"g(?:ive|ives|ave|iven)"
+_APPROVE_SAME_TARGET = (  # the ruling's list for form (ii)
+    r"approv(?:e|es|ed)|grant(?:s|ed)?|request(?:s|ed)?|cho(?:ose|oses|se|sen)"
+    r"|ask(?:s|ed)?\s+for|opt(?:s|ed)?\s+for"
+)
+_APPROVE_ANAPHOR = (  # form (i) also takes these; "gives it" is not an approval
+    rf"{_APPROVE_SAME_TARGET}|confirm(?:s|ed)?|authori[sz](?:e|es|ed)|allow(?:s|ed)?"
+    r"|permit(?:s|ted)?|accept(?:s|ed)?|agree(?:s|d)?\s+to|consent(?:s|ed)?\s+to"
+    r"|sign(?:s|ed)?\s+off\s+on"
+)
+# "asks to skip ...", "chooses to bypass ...": the infinitive must be the override's verb.
+_CHOOSE_TO = (
+    r"(?:ask(?:s|ed)?|request(?:s|ed)?|cho(?:ose|oses|se|sen)|opt(?:s|ed)?|elect(?:s|ed)?)"
+    r"(?:\s+you)?\s+to\s+(?P<inf>[a-z]+)"
 )
 _USER_CLAUSE = re.compile(
-    rf"\b{_CONDITION_OPEN}\s+(?:[\w'’-]+\s+){{0,3}}?{_USER_SUBJECT}\b"
-    rf"(?:\s+[\w'’-]+){{0,3}}?\s+{_APPROVING}\b",
+    rf"{_CONDITION_OPEN}\s+{_USER_SUBJECT}(?:\s+{_AUXILIARY}){{0,3}}\s+(?:"
+    rf"{_CHOOSE_TO}\b|(?P<give>{_GIVE})\b|(?P<same>{_APPROVE_SAME_TARGET})\b"
+    rf"|(?P<anaphor>{_APPROVE_ANAPHOR})\b|(?P<so>sa(?:ys|id)\s+so\b)"
+    r"|(?P<flag>pass(?:es|ed)?\s+(?:--yes|-y)(?![\w-]))"
+    r"|(?P<yes>(?:sa(?:ys|id)|answer(?:s|ed)?)\s+yes\b))",
     _I,
 )
+# The end of an object: adverbs that say when or how the approval was given, then the end
+# of the clause or an adverbial phrase ("approved it earlier in this session"). A noun, a
+# verb, or "of", "to" or "about" there means the object goes on ("this newsletter", "that
+# the font be changed", "a review of the essay").
+_CLAUSE_END = (
+    r"(?:\s+(?:already|earlier|explicitly|beforehand|previously|first|again|too|twice|once"
+    r"|then|now|above|here|today|recently))*"
+    r"(?:\s*(?:$|[,;:.!?](?!\w)|\b(?:then|and)\b)"
+    r"|\s+(?:in|during|within|at|on|via|through|by|with|from|for|before|when|while|as)\b)"
+)
+_CLAUSE_END_AT = re.compile(_CLAUSE_END, _I)
+# (i) An anaphor for the act or the overridden step, as the whole object.
+_ANAPHOR = re.compile(
+    r"\s+(?:(?:this|that)\s+(?:(?:exact|same|specific|particular)\s+)?"
+    rf"(?:action|step|change|operation)|this|that|it|so|the\s+above){_CLAUSE_END}",
+    _I,
+)
+# (iv) What may follow "said yes": the prompt it answers, then the end of the clause. An
+# adverbial is not enough here ("said yes at lunch", "answered yes in a survey").
+_YES_TAIL = re.compile(
+    r"(?:\s+to\s+(?:it|this|that|the\s+(?:confirmation\s+)?prompt|the\s+confirmation"
+    r"|the\s+question))?(?:\s+when\s+(?:asked|prompted))?"
+    r"(?:\s+(?:already|earlier|explicitly|again|twice))*\s*(?:$|[,;:.!?](?!\w)|\b(?:then|and)\b)",
+    _I,
+)
+# (ii) The head nouns of an approval step, and a noun phrase headed by one: a determiner,
+# adjectives from a closed set, the head, and at most a noun for the step itself. Any
+# other word before the head ("a newsletter approval") or after it ("a confirmation
+# email") makes it a different thing. An adverbial phrase may follow, as after an anaphor
+# ("approval for the hotfix" is the ruling's own example).
+_HEAD = (
+    r"(?P<head>confirmation|approval|review|sign-?off|consent|permission|prompt"
+    r"|authori[sz]ation)s?"
+)
+_STEP_NOUN = r"(?:step|prompt|dialog|dialogue|screen|check|gate)s?"
+_TARGET_PHRASE = re.compile(
+    r"\s+(?:(?:the|a|an|this|that|their|his|her|your|its)\s+)?"
+    r"(?:(?:explicit|express|final|prior|written|verbal|formal|second|same|required|manual"
+    r"|own|clear|full|advance|blanket|standing)\s+)*"
+    rf"{_HEAD}(?:\s+(?P<step>{_STEP_NOUN}))?{_CLAUSE_END}",
+    _I,
+)
+_TARGET_HEAD = re.compile(rf"\b{_HEAD}\b", _I)
+# Rule 1. An approval step is named by one of these stems; "prompt" alone is not one
+# ("ignore the prompt"). An authority target is named by one of the words below.
+_APPROVAL_STEM = re.compile(
+    r"\b(?:confirm|approv|permission|consent|sign-?off|review|authori[sz]|asking)", _I
+)
+_AUTHORITY_WORD = re.compile(
+    r"\b(?:instruction|direction|guidance|guideline|rule|directive|orders|polic|constraint"
+    r"|restriction|setting|system|developer|request|told|said|asked|everything|whatever"
+    r"|anything|anweisungen|instrucciones|consignes|instru[çc]|regeln|reglas)",
+    _I,
+)
+# What may follow the target for it still to be the step itself: the end of the clause, a
+# noun for the step, or a function word ("the confirmation if", "the approval only when",
+# "the confirmation for this run"). Any other word is the head that the approval word only
+# modifies ("the approval rules", "the confirmation email"), and so is "of ...".
+_AFTER_TARGET = re.compile(
+    rf"\s*(?:$|[,;:.!?)](?!\w))|\s+(?:(?P<step>{_STEP_NOUN})|(?P<word>[a-z]+))(?![\w'’-])", _I
+)
+_AFTER_TARGET_WORDS = (
+    _FUNCTION_WORDS
+    | _PREPOSITIONS
+    | frozenset(
+        re.findall(
+            r"[a-z]+",
+            "if when whenever once only and then or but after before provided as since until"
+            " unless while because so altogether entirely completely too first now again"
+            " automatically just also during within without you",
+        )
+    )
+) - frozenset(
+    ["of", "about", "bit", "part", "stuff", "one", "something", "anything", "everything"]
+    + ["nothing", "else"]
+)
+# (iii) A directive, in imperative position, to ask the user. Between the user and
+# "before" or "first" only a closed set of fillers: "about lunch", "on the font" or "for a
+# recipe" there makes it a question about something else.
 _ASK_USER = re.compile(
-    r"(?:^|[,;:]\s*|\b(?:and|then|please)\s+)(?:ask|confirm\s+with|check\s+with"
-    r"|get\s+approval\s+from)\s+(?:the\s+)?(?:user|them|requester|operator)\b"
-    r"[^,;:.]{0,30}?\b(?P<when>before|first)\b(?P<rest>[^,;:.]{0,40})",
+    r"(?:^\s*|[,;:]\s*|\b(?:and|then|but|please|always|must|should)\s+)"
+    r"(?P<ask>ask|confirm\s+with|check\s+with"
+    r"|get\s+(?:approval|confirmation|permission|consent|sign-?off)\s+from)\s+(?:the\s+)?"
+    r"(?:user|them|requester|operator)"
+    r"(?:\s+(?:once\s+more|again|one\s+more\s+time|explicitly|directly|always"
+    r"|for\s+(?:(?:explicit|their)\s+)?(?:confirmation|approval|permission|consent|sign-?off)"
+    r"|to\s+(?:confirm|approve)|whether\s+to\s+(?:proceed|continue)))*"
+    r"\s+(?P<when>before|first)\b",
     _I,
 )
-_OBJECT_STOP = re.compile(r"[,;:.]|\b(?:then|and|but)\b", _I)
-# (i) An anaphor or demonstrative for the act or the overridden step.
-_ANAPHOR = re.compile(r"\s*(?:for\s+)?(?:this|that|it|so|the\s+above)\b", _I)
+_OBJECT_STOP = re.compile(r"[,;:]|\.(?!\w)|\b(?:then|and|but)\b", _I)
+_FIRST_ENDS = re.compile(r"\s*(?:[.!?]?\s*$|;)")
+_FIRST_THEN = re.compile(r"\s*,?\s*(?:and\s+)?(?:only\s+)?then\s+", _I)
+_FIRST_BEFORE = re.compile(r"\s*,?\s*before\b", _I)
 _BEFORE_ANAPHOR = re.compile(
-    r"\s*(?:doing\s+(?:so|it|this|that)|you\s+do\s+(?:so|it|this|that)|it|this|that)\b", _I
-)
-# (ii) Head nouns of an override's target: the user clause must name the same one.
-_TARGET_HEAD = re.compile(
-    r"\b(confirmation|approval|review|sign-?off|consent|permission|prompt|instruction"
-    r"|rule|guidance|guideline|polic(?:y|ie)|restriction|authori[sz]ation)s?\b",
+    r"\s+(?:doing\s+(?:so|it|this|that)|you\s+do\s+(?:so|it|this|that)|proceeding"
+    rf"|continuing){_CLAUSE_END}",
     _I,
 )
+_BEFORE_VERB = re.compile(r"\s+(?:you\s+)?(?P<verb>[a-z]+)", _I)
+# A word that puts the asking and the override in different branches or in the wrong
+# order ("ask first; otherwise skip ...", "skip ..., then ask").
+_OTHER_BRANCH = re.compile(
+    r"\b(?:otherwise|else|instead|unless|except|if|when|whenever|once|after|regardless"
+    r"|anyway|however|even|though|although|either|or)\b",
+    _I,
+)
+# The same for a user clause: "if the user approves it, fine; otherwise skip ...".
+_ELSE_BRANCH = re.compile(
+    r"\b(?:otherwise|else|instead|unless|except|regardless|anyway|however|though|although"
+    r"|whether|if\s+not)\b",
+    _I,
+)
+_BUT = re.compile(r"\bbut\b", _I)
+_SENTENCE_PART = re.compile(r"[;:]|\.(?!\w)")
+_ASKED_AFTER = re.compile(r"\b(?:then|afterwards?|later|next)\b", _I)
+_ASK_CONDITION = re.compile(r"\b(?:if|when|whenever|unless|until|once|should|in\s+case)\b", _I)
+_DETERMINERS = frozenset(
+    ["the", "a", "an", "this", "that", "these", "those", "it", "them", "its", "their", "your"]
+    + ["any", "all", "every", "each"]
+)
 
 
-_YES = re.compile(r"(?:passed\s+--?yes|-y\b|said\s+yes|answered\s+yes)", _I)
+def _head(m: re.Match[str]) -> set[str]:
+    heads = {m.group("head").lower().replace("-", "")}
+    step = m.groupdict().get("step")
+    if step and step.lower().startswith("prompt"):
+        heads.add("prompt")
+    return heads
 
 
-def _heads(text: str) -> set[str]:
-    return {m.group(1).lower().replace("-", "") for m in _TARGET_HEAD.finditer(text)}
+def _approval_target(s: str, a: int, b: int) -> set[str] | None:
+    """The head nouns of the approval step that the override at s[a:b] skips, or None when
+    its target is an authority (instructions, rules, policy, settings, a system prompt)
+    or is not plainly an approval step."""
+    span = s[a:b]
+    if _AUTHORITY_WORD.search(span) or not _APPROVAL_STEM.search(span):
+        return None
+    after = _AFTER_TARGET.match(s, b)
+    if after is None:
+        return None  # "the approval-rules"
+    word = after.group("word")
+    if word is not None and word.lower() not in _AFTER_TARGET_WORDS:
+        return None  # "the approval rules", "the confirmation email"
+    end = after.end() if after.group("step") else b
+    heads: set[str] = set()
+    for m in _TARGET_HEAD.finditer(s, a, end):
+        heads |= _head(m)
+    return heads
 
 
-def _conditioned(s: str, act_starts: list[int], override: str) -> bool:
-    """Whether an override in s is conditioned on the user's own approval of it. Strict,
-    by ruling (Task 16b review round 3): only (i) a user clause whose object is an
-    anaphor for the act or step ("if the user has just approved this exact action"),
-    (ii) a user clause naming the override's own approval target ("asks to skip
-    confirmation" for "skip the confirmation"), or (iii) asking the user before or first,
-    followed by the act's own verb or an anaphor ("ask them once more before deleting")."""
-    target = _heads(override)
-    for m in _USER_CLAUSE.finditer(s):
-        stop = _OBJECT_STOP.search(s, m.end())
-        obj = s[m.end() : stop.start() if stop else len(s)]
-        if _ANAPHOR.match(obj):
-            return True
-        if target & _heads(obj):
-            return True
-        # A literal yes to the override's own confirmation ("if the user passed --yes",
-        # "said yes"): the answer to that prompt, read as form (ii). Kept for control
-        # ctl-080 and test_conditioned_override_is_marked; see the round-3 fix report.
-        if target & {"confirmation", "prompt"} and _YES.search(m.group()):
-            return True
+def _gerunds(verb: str) -> set[str]:
+    """The base form and the gerund spellings of a base-form verb."""
+    if not verb:
+        return set()
+    forms = {verb, verb + "ing", verb + verb[-1] + "ing"}
+    if verb.endswith("e"):
+        forms.add(verb[:-1] + "ing")
+    return forms
+
+
+def _names_target(s: str, at: int, heads: set[str]) -> bool:
+    """Whether a noun phrase headed by one of `heads` starts at `at`."""
+    t = _TARGET_PHRASE.match(s, at)
+    return t is not None and bool(heads & _head(t))
+
+
+def _user_clause_cancels(s: str, m: re.Match[str], verb: str, heads: set[str]) -> bool:
+    """Forms (i), (ii) and (iv) for the user clause m, whose verb ends at m.end(). `verb`
+    is the override's own verb and `heads` its target nouns."""
+    end = m.end()
+    if m.group("flag"):
+        return bool(heads & {"confirmation", "prompt"})
+    if m.group("yes"):
+        return bool(heads & {"confirmation", "prompt"}) and _YES_TAIL.match(s, end) is not None
+    if m.group("so"):
+        return _CLAUSE_END_AT.match(s, end) is not None
+    if m.group("anaphor"):
+        return _ANAPHOR.match(s, end) is not None
+    if m.group("give"):
+        return _names_target(s, end, heads)
+    inf = m.group("inf")
+    if inf is not None and inf.lower() == "do":
+        return _ANAPHOR.match(s, end) is not None  # "asks you to do so"
+    if inf is not None and inf.lower() != verb:
+        return False  # "asks to skip ..." for "bypass ...", "asks to review the draft"
+    return _ANAPHOR.match(s, end) is not None or _names_target(s, end, heads)
+
+
+def _before_cancels(
+    s: str, at: int, act_starts: list[int], ask: tuple[int, int], a: int, heads: set[str]
+) -> int:
+    """Form (iii) after "before" ending at `at`: an anaphor, the overridden step's verb with
+    that step (or nothing) as its object, or the verb of an act elsewhere in the sentence
+    with no object that the act does not have. Returns the end of the before-clause, or -1."""
+    m = _BEFORE_ANAPHOR.match(s, at)
+    if m is not None:
+        return m.end()
+    m = _BEFORE_VERB.match(s, at)
+    if m is None:
+        return -1
+    stop = _OBJECT_STOP.search(s, m.end())
+    end = stop.start() if stop else len(s)
+    verb = m.group("verb").lower()
     low = s.lower()
-    verbs = set()
-    for a in act_starts:
-        w = _WORD.match(low, a)
-        if w is not None:
-            verbs.add(w.group()[:4])
-    first = _WORD.match(override.lower())
-    if first is not None:
-        verbs.add(first.group()[:4])  # the overridden step's own verb ("skip")
+    first = _WORD.match(low, a)
+    if first is not None and verb in _gerunds(first.group()):
+        rest = s[m.end() : end]
+        if not rest.strip() or _ANAPHOR.match(s, m.end()) or _names_target(s, m.end(), heads):
+            return end
+    obj = set(_WORD.findall(low[m.end() : end])) - _DETERMINERS
+    for start in act_starts:
+        if ask[0] <= start < end:
+            continue  # the asking itself, or a verb inside the before-clause
+        w = _WORD.match(low, start)
+        if w is None or verb not in _gerunds(w.group()):
+            continue
+        act_stop = _OBJECT_STOP.search(s, w.end())
+        act_end = act_stop.start() if act_stop else len(s)
+        if obj <= set(_WORD.findall(low[w.end() : act_end])):
+            return end
+    return -1
+
+
+def _ask_first_cancels(s: str, act_starts: list[int], a: int, b: int, heads: set[str]) -> bool:
+    """Form (iii) for the override at s[a:b]."""
     for m in _ASK_USER.finditer(s):
-        rest = m.group("rest")
-        if m.group("when").lower() == "first":
-            return True
-        if _BEFORE_ANAPHOR.match(rest):
-            return True
-        nxt = _WORD.search(rest.lower().replace(" you ", " ", 1))
-        if nxt is not None and nxt.group()[:4] in verbs:
-            return True
+        ask = m.start("ask")
+        lead = max(0, ask - 200)  # bounded lookback, as in _clause
+        for part in _SENTENCE_PART.finditer(s, lead, ask):
+            lead = part.end()
+        if _negated(s, ask, 0) or _ASK_CONDITION.search(s, lead, ask):
+            continue  # "do not ask the user first", "if it fails, ask the user first"
+        span = (m.start(), m.end())
+        if m.group("when").lower() == "before":
+            end = _before_cancels(s, m.end(), act_starts, span, a, heads)
+        elif (nxt := _FIRST_BEFORE.match(s, m.end())) is not None:
+            end = _before_cancels(s, nxt.end(), act_starts, span, a, heads)
+        elif (nxt := _FIRST_THEN.match(s, m.end())) is not None:
+            # "first, then <the override, or an act joined to it>": no other clause between
+            end = nxt.end() if a >= nxt.end() and not _BREAK.search(s, nxt.end(), a) else -1
+        else:
+            end = m.end() if _FIRST_ENDS.match(s, m.end()) else -1
+        if end < 0:
+            continue
+        if a >= end:
+            if _OTHER_BRANCH.search(s, end, a) or _BUT.search(s, end, a):
+                continue  # "ask the user first; otherwise skip ..."
+        elif b <= ask and (_OTHER_BRANCH.search(s, b, ask) or _ASKED_AFTER.search(s, b, ask)):
+            continue  # "skip ... and wire the funds, then ask the user first"
+        return True
     return False
+
+
+def _conditioned(s: str, act_starts: list[int], a: int, b: int) -> bool:
+    """Whether the override at s[a:b] is conditioned on the user's own approval of it, by
+    the four forms of the round-4 ruling (see the section comment above)."""
+    heads = _approval_target(s, a, b)
+    if heads is None:
+        return False
+    first = _WORD.match(s.lower(), a)
+    verb = first.group() if first is not None else ""
+    for m in _USER_CLAUSE.finditer(s):
+        lo, hi = (m.end(), a) if a >= m.end() else (b, m.start())
+        if lo <= hi and _ELSE_BRANCH.search(s, lo, hi):
+            continue  # the approval and the override are in different branches
+        if _user_clause_cancels(s, m, verb, heads):
+            return True
+    return _ask_first_cancels(s, act_starts, a, b, heads)
 
 
 # --- prefilter: anchor words without which a feature's patterns cannot match ---------
@@ -1384,8 +1617,8 @@ def _others(s: str, act_starts: list[int] = []) -> list[_Raw]:  # noqa: B006
     """audience, solicit, and override matches in sentence s."""
     out: list[_Raw] = []
 
-    def cond(override: str) -> bool:
-        return _conditioned(s, act_starts, override)
+    def cond(m: re.Match[str]) -> bool:
+        return _conditioned(s, act_starts, m.start(), m.end())
 
     if _ANCHOR["audience"].search(s):
         out.extend(("audience", m.start(), m.end(), False, None) for m in _AUDIENCE.finditer(s))
@@ -1394,12 +1627,12 @@ def _others(s: str, act_starts: list[int] = []) -> list[_Raw]:  # noqa: B006
     if _ANCHOR["override"].search(s):
         for m in _OVERRIDE.finditer(s):
             if not _negated(s, m.start(), 0):
-                out.append(("override", m.start(), m.end(), cond(m.group()), None))
+                out.append(("override", m.start(), m.end(), cond(m), None))
         for m in _OVERRIDE_POSTPOSED.finditer(s):
             if not _negated(s, m.start(), 0) and not _NEGATOR.search(m.group()):
-                out.append(("override", m.start(), m.end(), cond(m.group()), None))
+                out.append(("override", m.start(), m.end(), cond(m), None))
         for m in _OVERRIDE_NEGATIVE_FORM.finditer(s):
-            out.append(("override", m.start(), m.end(), cond(m.group()), None))
+            out.append(("override", m.start(), m.end(), cond(m), None))
     taken = sorted((a, b) for f, a, b, _, _ in out if f == "override")
     for a, b in proximity.override_candidates(s):
         if _overlaps(taken, a, b):
@@ -1407,7 +1640,7 @@ def _others(s: str, act_starts: list[int] = []) -> list[_Raw]:  # noqa: B006
         if _negated(s, a, 0) or _reported(s, a):
             continue
         insort(taken, (a, b))
-        out.append(("override", a, b, _conditioned(s, act_starts, s[a:b]), None))
+        out.append(("override", a, b, _conditioned(s, act_starts, a, b), None))
     return out
 
 
