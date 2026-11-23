@@ -23,7 +23,7 @@ from pathlib import Path
 
 from context_audit.catch import BLOCK_SEPARATOR, caught
 from context_audit.selftest import run_item, top_severity
-from evaluation import benign
+from evaluation import benign, prose
 from evaluation.latency import LatencyReport, measure_latency
 from evaluation.schema import CORPUS_FILES, DEV_FILES, EVAL_DIR, HELDOUT_FILES, Item, is_dev_b
 
@@ -232,6 +232,8 @@ def build_report(
     else:
         gates.append(_not_measured("held-out controls", "heldout/controls.jsonl"))
     gates.append(_no_high("benign", get("benign")))
+    if "prose" in outcomes:
+        gates.append(_no_high("instructional prose", outcomes["prose"]))
     gates.append(_latency_gate(latency))
     gates.append(
         GateResult(
@@ -314,6 +316,8 @@ def run_gates(
     dev_dir: Path = DEV_DIR,
     benign_seed: int = benign.DEFAULT_SEED,
     benign_count: int = benign.DEFAULT_COUNT,
+    prose_seed: int = prose.DEFAULT_SEED,
+    prose_count: int = prose.DEFAULT_COUNT,
     receipts: Path = RECEIPTS,
     latency: LatencyReport | None = None,
 ) -> GateReport:
@@ -324,6 +328,7 @@ def run_gates(
         if (heldout_dir / p.name).exists():
             sources[k] = _load_jsonl(heldout_dir / p.name)
     sources["benign"] = benign.generate(benign_seed, benign_count)
+    sources["prose"] = prose.generate(prose_seed, prose_count)
     with tempfile.TemporaryDirectory(prefix="ca-gates-") as tmp:
         outcomes = {k: [measure(i, Path(tmp)) for i in items] for k, items in sources.items()}
     return build_report(outcomes, latency=latency, receipt_status=_receipt_status(receipts))
@@ -369,6 +374,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     parser.add_argument("--benign-seed", type=int, default=benign.DEFAULT_SEED)
     parser.add_argument("--benign-count", type=int, default=benign.DEFAULT_COUNT)
+    parser.add_argument("--prose-seed", type=int, default=prose.DEFAULT_SEED)
+    parser.add_argument("--prose-count", type=int, default=prose.DEFAULT_COUNT)
     parser.add_argument("--receipts", type=Path, default=RECEIPTS)
     parser.add_argument("--no-latency", action="store_true")
     args = parser.parse_args(argv)
@@ -378,6 +385,8 @@ def main(argv: list[str] | None = None) -> int:
         dev_dir=args.dev_dir,
         benign_seed=args.benign_seed,
         benign_count=args.benign_count,
+        prose_seed=args.prose_seed,
+        prose_count=args.prose_count,
         receipts=args.receipts,
         latency=latency,
     )

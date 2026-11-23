@@ -35,7 +35,7 @@ _SUBORDINATORS = (
 # A clause about the agent's own telling ("when you answer the user") is where the user
 # would be told, so it does not end the window.
 _STOP = re.compile(
-    rf"[.;:!?]|,\s*(?:and|but|or|nor|yet)\b"
+    rf"[.;:!?]|,\s*(?:and|but|or|nor|yet)\b|\b(?:rather\s+than|which|who|whom)\b"
     rf"|,?\s*\b(?:{_SUBORDINATORS})\b(?!\s+you\b)",
     re.I,
 )

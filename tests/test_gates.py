@@ -309,3 +309,15 @@ def test_main_exits_non_zero_without_a_heldout_set(tmp_path, capsys):
     )
     assert code == 1
     assert "in-scope recall | not measured (fails the run)" in capsys.readouterr().out
+
+
+def test_instructional_prose_is_a_no_high_gate():
+    outcomes = {
+        "prose": [
+            _o("pro-0001", "prose", "none", "high"),
+            _o("pro-0002", "prose", "none", "review"),
+        ]
+    }
+    g = _gate(build_report(outcomes), "instructional prose")
+    assert (g.numerator, g.denominator, g.passed) == (1, 2, False)
+    assert g.failing_ids == ("pro-0001",)

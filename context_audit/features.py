@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from typing import NamedTuple
 
 from context_audit import lexicon as lx
-from context_audit import proximity
+from context_audit import proximity, scope
 from context_audit.form import imperative_head
 from context_audit.lexicon import alt
 from context_audit.text import Field, Normalized, fenced, line_breaks, record_lines, sentences
@@ -106,7 +106,7 @@ _SYMBOL = "\u2190-\u2bff\U0001f300-\U0001faff\ufe0f"
 # Concealment manner adverbs, shared by the act pattern and the conceal-act detector.
 _CONCEAL_ADV = (
     r"(?:silently|quietly|secretly|discreetly|covertly|stealthily|privately|surreptitiously"
-    r"|unannounced|in\s+secret|in\s+the\s+background|behind\s+the\s+scenes)"
+    r"|unannounced|in\s+secret|in\s+the\s+background|behind\s+the\s+scenes|under\s+the\s+hood)"
 )
 _HEAD_PREFIX = (
     rf"[\s\-*•>\d.)\"'`“{_SYMBOL}]{{0,6}}"
@@ -1404,7 +1404,10 @@ def _act_heads(s: str) -> Iterator[re.Match[str]]:
 
 
 def _directives(
-    s: str, own_tool: str | None, fragment: Callable[[int], bool] | None = None
+    s: str,
+    own_tool: str | None,
+    fragment: Callable[[int], bool] | None = None,
+    list_item: bool = False,
 ) -> tuple[list[_Raw], list[int]]:
     """act and call matches in sentence s (sentence-relative), and the start of every act
     and call found, including those absorbed into a call or naming the field's own tool.
@@ -1428,6 +1431,8 @@ def _directives(
             continue
         if _heads_a_subject(s, word, m.end(head)):
             continue
+        if list_item and _LIST_LINE.fullmatch(s[:v]) and scope.noun_phrase_item(s, m.end(head)):
+            continue  # "- Retry loops that give up ...": a noun phrase, not an imperative
         opener = m.group("opener").lower()
         if opener in _ADVERB_OPENERS and _after_subject(s, m.start("opener")):
             continue
@@ -1494,11 +1499,14 @@ def _reported(s: str, start: int) -> bool:
     return bool(m.group("aux")) or subj in _PRONOUN_SUBJECTS
 
 
-def _modifies_directive(s: str, pos: int, directives: list[int]) -> bool:
+def _modifies_directive(s: str, pos: int, directives: list[int], end: int | None = None) -> bool:
     """Whether a manner phrase at `pos` modifies a directive act or call: one in its clause,
-    or one earlier in the sentence with no semicolon between."""
+    or one earlier in the sentence with no semicolon between, and the phrase not in a
+    relative clause or on a finite verb of its own (`scope.manner_on_directive`; `end`
+    is the end of a manner adverb)."""
     clo, chi = _clause(s, pos, 0, len(s))
-    return any(clo <= d < chi or (d < pos and ";" not in s[d:pos]) for d in directives)
+    near = [d for d in directives if clo <= d < chi or (d < pos and ";" not in s[d:pos])]
+    return bool(near) and scope.manner_on_directive(s, pos, end, near)
 
 
 def _subject_kind(s: str, pos: int, has_referent: bool) -> str:
@@ -1600,8 +1608,12 @@ def _conceal(s: str, has_referent: bool, directives: list[int]) -> list[_Raw]:
     out = [o for o in out if not _pronoun_for_data(s, o[1], o[2])]
     if directives or proverb:
         for m in _SILENT.finditer(s):
+            if scope.is_background(m.group()) and not scope.background_conceals(
+                s, m.start(), m.end()
+            ):
+                continue  # where work runs, not concealment, without a user-awareness cue
             if not _negated(s, m.start(), 0) and (
-                proverb or _modifies_directive(s, m.start(), directives)
+                proverb or _modifies_directive(s, m.start(), directives, m.end())
             ):
                 out.append(("conceal-act", m.start(), m.end(), False, None))
     return out
@@ -1704,11 +1716,13 @@ def _others(s: str, act_starts: list[int] = []) -> list[_Raw]:  # noqa: B006
                 out.append(("override", m.start(), m.end(), cond(m), None))
         for m in _OVERRIDE_NEGATIVE_FORM.finditer(s):
             out.append(("override", m.start(), m.end(), cond(m), None))
+    # An override needs a cue verb governing its target (`scope.override_governs`).
+    out = [o for o in out if o[0] != "override" or scope.override_governs(s, o[1], o[2])]
     taken = sorted((a, b) for f, a, b, _, _ in out if f == "override")
     for a, b in proximity.override_candidates(s):
         if _overlaps(taken, a, b):
             continue
-        if _negated(s, a, 0) or _reported(s, a):
+        if _negated(s, a, 0) or _reported(s, a) or not scope.override_governs(s, a, b):
             continue
         insort(taken, (a, b))
         out.append(("override", a, b, _conditioned(s, act_starts, a, b), None))
@@ -1934,7 +1948,10 @@ def detect(
                 result.complete = False
                 break
             s = text[lo:hi]
-            raw, starts = _directives(s, own_tool, lambda p, lo=lo: fragment(lo + p))
+            item = lo == s_lo and _LIST_LINE.match(text, lo) is not None
+            raw, starts = _directives(
+                s, own_tool, lambda p, lo=lo: fragment(lo + p), list_item=item
+            )
             directive = bool(starts)
             if _ANCHOR["conceal"].search(s):
                 conceal = _conceal(s, directive or directive_here or prev_directive, starts)

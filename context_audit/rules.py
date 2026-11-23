@@ -17,7 +17,7 @@ from bisect import bisect_left
 from dataclasses import dataclass
 from pathlib import Path
 
-from context_audit import RULE_VERSION
+from context_audit import RULE_VERSION, scope
 from context_audit.features import Match
 from context_audit.state import span_digest
 from context_audit.text import Field, Normalized, normalize, original_range, sentences
@@ -40,6 +40,18 @@ _BACK_REFERENCE = re.compile(
     r"|\b(?:told|informed|notified|aware|know|find\s+out|notice|learn)\W*$",
     re.IGNORECASE,
 )
+
+
+_LIST_ITEM = re.compile(r"(?:[-*+]|\d+[.)]) ")
+
+
+def _refers_back(sentence: str, after_item: bool) -> bool:
+    """Whether a sentence refers back to the one before it. A list item after a list item
+    needs an explicit back-reference (`scope.refers_to_previous_item`): a feature in one
+    item does not combine with a feature in the next on a pronoun resolved in its own item."""
+    if not _BACK_REFERENCE.search(sentence):
+        return False
+    return not after_item or scope.refers_to_previous_item(sentence)
 
 
 @dataclass(frozen=True)
@@ -103,7 +115,11 @@ def _hits(
         n = normalize(fields[i])
         sents = sentences(n)
         base = len(refers_back)
-        refers_back.extend(bool(_BACK_REFERENCE.search(n.text[a:b])) for a, b in sents)
+        items = [_LIST_ITEM.match(n.text, a) is not None for a, _ in sents]
+        refers_back.extend(
+            _refers_back(n.text[a:b], items[k] and (items[k - 1] if k else False))
+            for k, (a, b) in enumerate(sents)
+        )
         if not sents:  # an empty block still separates its neighbours
             refers_back.append(False)
         hidden = _hidden_ranges(n)
