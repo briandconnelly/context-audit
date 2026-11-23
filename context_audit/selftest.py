@@ -39,7 +39,7 @@ def _blocks(item: dict) -> list[str]:
     return item.get("blocks") or [item["text"]]
 
 
-def _run(item: dict, state_root: Path) -> tuple[ScanResult, list[tuple[str, str]]]:
+def run_item(item: dict, state_root: Path) -> tuple[ScanResult, list[tuple[str, str]]]:
     """Scan one item through its entry point; also return its (locator, text) blocks."""
     texts = _blocks(item)
     if item["entry"] == "hook":
@@ -61,15 +61,15 @@ def _run(item: dict, state_root: Path) -> tuple[ScanResult, list[tuple[str, str]
     return result, [(f.locator, f.text) for f in fields]
 
 
-def _top(result: ScanResult) -> str:
+def top_severity(result: ScanResult) -> str:
     sev = {f.severity for f in result.findings}
     return "high" if "high" in sev else "review" if "review" in sev else "none"
 
 
 def _canary_ok(item: dict, state_root: Path) -> bool:
-    result, blocks = _run(item, state_root)
+    result, blocks = run_item(item, state_root)
     if item["expected"] != "high":
-        return _top(result) == item["expected"]
+        return top_severity(result) == item["expected"]
     joined = BLOCK_SEPARATOR.join(t for _, t in blocks)
     start = joined.find(item["span"])
     return start >= 0 and caught(blocks, (start, start + len(item["span"])), result.findings)
@@ -87,7 +87,7 @@ def run_selftest(state_root: Path) -> list[SelfTest]:
         flagged = tuple(
             c["id"]
             for c in controls
-            if c["entry"] == entry and _top(_run(c, state_root)[0]) == "high"
+            if c["entry"] == entry and top_severity(run_item(c, state_root)[0]) == "high"
         )
         out.append(SelfTest(entry, not missed and not flagged, missed, flagged))
     return out
