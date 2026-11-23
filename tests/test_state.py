@@ -190,3 +190,91 @@ def test_stale_key_temp_file_is_removed(tmp_path):
     (tmp_path / "key.99999.tmp").write_bytes(b"")
     state.span_digest(tmp_path, "x")
     assert sorted(p.name for p in tmp_path.iterdir() if p.name.startswith("key")) == ["key"]
+
+
+# --- F2: the state directory and its files are checked, never followed ---
+
+
+def test_symlinked_state_directory_is_refused(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir(mode=0o755)
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    with pytest.raises(StateError):
+        ensure_state(link)
+    assert (real.stat().st_mode & 0o777) == 0o755  # not chmodded through the link
+
+
+def test_state_path_that_is_a_file_is_refused_without_chmod(tmp_path):
+    f = tmp_path / "f"
+    f.write_text("")
+    f.chmod(0o644)
+    with pytest.raises(StateError):
+        ensure_state(f)
+    assert (f.stat().st_mode & 0o777) == 0o644
+
+
+def test_state_directory_owned_by_another_user_is_refused(tmp_path, monkeypatch):
+    d = tmp_path / "d"
+    d.mkdir(mode=0o755)
+    monkeypatch.setattr(state.os, "getuid", lambda: os.stat(d).st_uid + 1)
+    with pytest.raises(StateError):
+        ensure_state(d)
+    assert (d.stat().st_mode & 0o777) == 0o755
+
+
+def test_event_log_symlink_is_not_followed(tmp_path):
+    root = ensure_state(tmp_path / "s")
+    victim = tmp_path / "victim"
+    victim.write_text("keep\n")
+    (root / "events.jsonl").symlink_to(victim)
+    with pytest.raises(StateError):
+        append_event(root, {"event": "x"})
+    with pytest.raises(StateError):
+        read_events(root)
+    assert victim.read_text() == "keep\n"
+
+
+def test_counter_temp_symlink_is_not_followed(tmp_path):
+    root = ensure_state(tmp_path / "s")
+    victim = tmp_path / "victim"
+    victim.write_text("keep\n")
+    (root / "counters.json.tmp").symlink_to(victim)
+    bump(root, calls_requested=1)
+    assert victim.read_text() == "keep\n"
+    assert read_counters(root) == {"calls_requested": 1}
+
+
+def test_key_that_is_a_fifo_does_not_block(tmp_path):
+    root = ensure_state(tmp_path / "s")
+    os.mkfifo(root / "key")
+    code = (
+        "import sys; from pathlib import Path; from context_audit import state\n"
+        "try:\n    state.span_digest(Path(sys.argv[1]), 'x')\n"
+        "except state.StateError:\n    print('refused')\n"
+    )
+    p = subprocess.run([sys.executable, "-c", code, str(root)], cwd=REPO, capture_output=True,
+                       text=True, timeout=10)  # fmt: skip
+    assert p.stdout.strip() == "refused"
+
+
+def test_counters_that_are_a_fifo_do_not_block(tmp_path):
+    root = ensure_state(tmp_path / "s")
+    os.mkfifo(root / "counters.json")
+    code = (
+        "import sys; from pathlib import Path; from context_audit import state\n"
+        "try:\n    state.read_counters(Path(sys.argv[1]))\n"
+        "except state.StateError:\n    print('refused')\n"
+    )
+    p = subprocess.run([sys.executable, "-c", code, str(root)], cwd=REPO, capture_output=True,
+                       text=True, timeout=10)  # fmt: skip
+    assert p.stdout.strip() == "refused"
+
+
+def test_deeply_nested_event_line_is_skipped(tmp_path):
+    # Minor 10: a line that is too deep to parse is skipped like any unparseable line.
+    root = ensure_state(tmp_path / "s")
+    append_event(root, {"event": "a"})
+    with open(root / "events.jsonl", "ab") as f:
+        f.write(b"[" * 200_000 + b"]" * 200_000 + b"\n")
+    assert read_events(root) == [{"event": "a"}]

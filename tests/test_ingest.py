@@ -46,10 +46,11 @@ def test_non_text_blocks_are_skipped():
 def test_json_string_yields_leaf_fields_with_paths():
     body = json.dumps({"items": [{"note": "n0"}, {"note": "n1", "k": 3}], "title": "t"})
     r = from_hook_event(post(body))
+    # R6 (final fix wave): object members are located by ordinal, never by their key.
     assert [(f.locator, f.text) for f in r.fields] == [
-        ("$.items[0].note", "n0"),
-        ("$.items[1].note", "n1"),
-        ("$.title", "t"),
+        ("$.#0[0].#0", "n0"),
+        ("$.#0[1].#0", "n1"),
+        ("$.#1", "t"),
     ]
     assert len({f.source_id for f in r.fields}) == 3
     assert r.outcome == "complete"
@@ -65,7 +66,7 @@ def test_json_in_text_block_is_expanded():
     r = from_hook_event(post([{"type": "text", "text": "plain"}, {"type": "text", "text": body}]))
     assert [(f.locator, f.block) for f in r.fields] == [
         ("content[0].text", 0),
-        ("content[1].text$.items[2].note", 1),
+        ("content[1].text$.#0[2].#0", 1),  # R6: ordinal locators
     ]
     assert r.fields[0].source_id != r.fields[1].source_id
 
@@ -172,7 +173,7 @@ def test_deep_sibling_does_not_hide_shallow_directive(tmp_path):
 
 def test_leading_bom_and_whitespace_still_expand(tmp_path):
     ing = from_hook_event(post("\ufeff \n" + json.dumps({"n": D})))
-    assert [f.locator for f in ing.fields] == ["$.n"]
+    assert [f.locator for f in ing.fields] == ["$.#0"]  # R6: ordinal locators
     assert _high(ing, tmp_path)
 
 
@@ -208,4 +209,27 @@ def test_embedded_resource_text_is_scanned(tmp_path):
     assert _high(ing, tmp_path)
     blocks = [{"type": "resource", "resource": {"text": json.dumps({"n": D})}}]
     ing = from_hook_event(post(blocks))
-    assert [f.locator for f in ing.fields] == ["content[0].resource.text$.n"]
+    assert [f.locator for f in ing.fields] == ["content[0].resource.text$.#0"]  # R6
+
+
+def test_wide_object_is_walked_lazily_and_stops_at_the_node_cap():
+    # F3: no child list is built past the cap; the gap is recorded.
+    body = json.dumps({f"k{i}": i for i in range(20_000)} | {"late": "x"})
+    ing = from_hook_event(post(body), Budget(max_fields=5))
+    assert (ing.outcome, ing.reason) == ("partial", "field-budget")
+    assert ing.fields == []
+
+
+def test_block_loop_stops_when_the_collector_is_full(monkeypatch):
+    # F3: once full, later blocks are not parsed.
+    from context_audit import ingest
+
+    parsed = []
+    real = ingest._Collector._parse
+    monkeypatch.setattr(
+        ingest._Collector, "_parse", lambda self, t: parsed.append(t) or real(self, t)
+    )
+    blocks = [{"type": "text", "text": f"block {i}"} for i in range(50)]
+    ing = from_hook_event(post(blocks), Budget(max_fields=3))
+    assert (ing.outcome, ing.reason) == ("partial", "field-budget")
+    assert len(parsed) <= 4

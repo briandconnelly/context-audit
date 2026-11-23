@@ -4,20 +4,25 @@ Shapes follow the probe (docs/research/2026-11-22-probe-observations.md): a resu
 list of content blocks or, with `structuredContent`, a string of JSON; a failure carries a
 top-level `error` string. Text that parses as a JSON object or array is expanded into one
 field per string value, so a directive inside JSON is read as prose, not as a quotation.
-Keys are not scanned. Nesting past `Budget.max_depth` and fields past `Budget.max_fields`
-are dropped and reported as `partial`.
+Keys are not scanned, and never copied: an object member is located by its ordinal
+(`$.#0`), so no key reaches a locator, the event log, or hook output. Nesting past
+`Budget.max_depth` and fields past `Budget.max_fields` are dropped and reported as
+`partial`; the walk is lazy and stops at its node cap.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 from context_audit.scan import Budget
 from context_audit.text import Field
 
 PREVIEW_LIMIT = 2_000  # characters the model is shown of a large result, per the probe
+
+_Item = tuple[object, str, int, tuple[str, int] | None]
 
 
 @dataclass(frozen=True)
@@ -45,6 +50,7 @@ class _Collector:
         self.reason = ""
         self.chars = 0
         self.leaves = 0
+        self.visited = 0  # JSON nodes walked, across every text of the result
 
     def full(self) -> bool:
         if len(self.fields) >= self.budget.max_fields:
@@ -85,19 +91,41 @@ class _Collector:
         self.leaves += 1
         return f"{self.source_id}.j{self.leaves}"
 
+    def _children(self, node: dict | list, path: str, depth: int) -> Iterator[_Item]:
+        """A container's children, made one at a time. A string leaf carries its
+        (source_id, block): values of different object members are separate sources;
+        consecutive strings of one array share a source with consecutive blocks, so they
+        join like sibling text blocks."""
+        if isinstance(node, dict):
+            for i, v in enumerate(node.values()):
+                yield v, f"{path}.#{i}", depth + 1, None
+            return
+        run: str | None = None
+        run_block = 0
+        for i, v in enumerate(node):
+            here = None
+            if isinstance(v, str):
+                if run is None:
+                    run, run_block = self._new_source(), 0
+                else:
+                    run_block += 1
+                here = (run, run_block)
+            else:
+                run = None
+            yield v, f"{path}[{i}]", depth + 1, here
+
     def _walk(self, root: object, prefix: str, block: int) -> None:
         # Iterative, depth-first in document order; depth counts enclosing containers.
-        # A string leaf carries its (source_id, block): values of different object keys
-        # are separate sources; consecutive strings of one array share a source with
-        # consecutive blocks, so they join like sibling text blocks.
-        Item = tuple[object, str, int, tuple[str, int] | None]
-        stack: list[Item] = [(root, "$", 1, None)]
+        stack: list[Iterator[_Item]] = [iter([(root, "$", 1, None)])]
         node_cap = self.budget.max_fields * 10
-        visited = 0
         while stack:
-            node, path, depth, where = stack.pop()
-            visited += 1
-            if visited > node_cap:
+            item = next(stack[-1], None)
+            if item is None:
+                stack.pop()
+                continue
+            node, path, depth, where = item
+            self.visited += 1
+            if self.visited > node_cap:
                 self.reason = self.reason or "field-budget"
                 return
             if isinstance(node, str):
@@ -109,24 +137,7 @@ class _Collector:
                 if depth > self.budget.max_depth:
                     self.reason = self.reason or "depth"
                     continue
-                items: list[Item] = []
-                if isinstance(node, dict):
-                    items = [(v, f"{path}.{k}", depth + 1, None) for k, v in node.items()]
-                else:
-                    run: str | None = None
-                    run_block = 0
-                    for i, v in enumerate(node):
-                        here = None
-                        if isinstance(v, str):
-                            if run is None:
-                                run, run_block = self._new_source(), 0
-                            else:
-                                run_block += 1
-                            here = (run, run_block)
-                        else:
-                            run = None
-                        items.append((v, f"{path}[{i}]", depth + 1, here))
-                stack.extend(reversed(items))
+                stack.append(self._children(node, path, depth))
 
 
 _UNPARSEABLE = object()
@@ -162,6 +173,8 @@ def from_hook_event(event: dict, budget: Budget = _DEFAULT_BUDGET) -> Ingested:
             c.text("text", response, 0, "")
         elif isinstance(response, list):
             for i, block in enumerate(response):
+                if c.full():
+                    break
                 if not isinstance(block, dict):
                     continue
                 text, locator = block.get("text"), f"content[{i}].text"

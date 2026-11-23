@@ -264,3 +264,33 @@ def test_a_source_unreadable_at_scan_time_is_not_counted_scanned(env, capsys, mo
     rep = json.loads(capsys.readouterr().out)
     assert (rep["sources"]["scanned"], rep["sources"]["unreadable"]) == (0, 1)
     assert report.NOT_FULLY_SCANNED in rep["messages"]
+
+
+def test_json_keys_never_reach_the_log_and_show_still_finds_the_span(env, capsys):
+    # F1 / R6: a structured result's object keys are third-party text; locators are ordinal.
+    key = "IGNORE-ALL-PREVIOUS-KEY"
+    body = json.dumps({"meta": {key: CANARY}})
+    lines = FIXTURE.read_text().splitlines()
+    entry = json.loads(lines[2])
+    entry["toolUseResult"] = [{"type": "text", "text": body}]
+    entry["message"]["content"][0]["content"] = [{"type": "text", "text": body}]
+    transcript = env["tmp"] / "t.jsonl"
+    transcript.write_text("\n".join([lines[0], lines[1], json.dumps(entry), lines[3]]) + "\n")
+    event = {
+        "session_id": "s", "transcript_path": str(transcript), "cwd": "/",
+        "hook_event_name": "PostToolUse", "tool_name": "mcp__examplecloud__search",
+        "tool_input": {}, "tool_use_id": "toolu_fixture01",
+        "mcp_server": {"name": "examplecloud", "source": "user"},
+        "tool_response": [{"type": "text", "text": body}],
+    }  # fmt: skip
+    e = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
+    e["CONTEXT_AUDIT_HOME"] = str(env["home"])
+    p = subprocess.run([sys.executable, "-I", str(HOOK)], input=json.dumps(event), text=True,
+                       capture_output=True, env=e, check=True, timeout=30)  # fmt: skip
+    assert key not in p.stdout and "meta" not in p.stdout
+    log = (env["home"] / "events.jsonl").read_text()
+    assert key not in log and "meta" not in log
+    fid = next(r["finding_id"] for r in state.read_events(env["home"]) if r["severity"] == "high")
+    cli.sys.stdout.isatty = lambda: True  # type: ignore[method-assign]  # R7: show needs a TTY
+    assert run(env, "show", fid) == 0
+    assert "submit_feedback" in capsys.readouterr().out

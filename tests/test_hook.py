@@ -459,3 +459,36 @@ def test_canary_before_long_prose_warns_and_is_partial_through_the_launcher(tmp_
     logged = events(home)
     assert any(e["severity"] == "high" for e in logged)
     assert {e["outcome"] for e in logged} == {"partial"}
+
+
+def test_event_over_the_read_limit_is_a_recorded_gap(tmp_path):
+    # F3: stdin is read only up to a stated limit; a larger event is a gap, not parsed.
+    from context_audit.hook import MAX_EVENT_BYTES
+
+    home = tmp_path / "state"
+    big = json.dumps(event(text="x" * (MAX_EVENT_BYTES + 10)) | {"hook_event_name": "PostToolUse"})
+    p = run_bytes(home, big.encode())
+    assert (p.returncode, p.stderr) == (0, b"")
+    assert json.loads(p.stdout) == UNREADABLE
+    assert counters(home) == {"results_delivered": 1, "not_scanned": 1}
+    [gap] = events(home)
+    assert (gap["event"], gap["reason"]) == ("PostToolUse", "oversized-event")
+
+
+def test_unusable_state_warns_without_naming_a_show_command(locked_dir):
+    # F14: with no record written, the message must not send the owner to `show`.
+    p = run(locked_dir / "state", event(text=CANARY))
+    msg = json.loads(p.stdout)["systemMessage"]
+    assert msg.startswith("context-audit: flagged a third-party directive")
+    assert "show" not in msg and "f-" not in msg
+    assert msg.endswith("See: context-audit status")
+
+
+def test_unwritable_event_log_warns_without_naming_a_show_command(tmp_path):
+    # F14: the state directory works but the finding record could not be written.
+    home = tmp_path / "state"
+    home.mkdir(mode=0o700)
+    (home / "events.jsonl").symlink_to(tmp_path / "elsewhere")
+    msg = json.loads(run(home, event(text=CANARY)).stdout)["systemMessage"]
+    assert "show" not in msg
+    assert not (tmp_path / "elsewhere").exists()
