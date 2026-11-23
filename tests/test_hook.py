@@ -23,7 +23,7 @@ MODEL_NOTE = (
 OVERSIZED = MODEL_NOTE + " The saved copy of this result also holds flagged text."
 KEYS = {
     "ts", "session", "event", "tool_use_id", "transcript", "source_id", "finding_id",
-    "features", "severity", "rule_version", "digest", "locator", "outcome",
+    "features", "severity", "rule_version", "digest", "locator", "outcome", "reason",
 }  # fmt: skip
 
 
@@ -96,6 +96,7 @@ def test_high_finding_prints_the_fixed_messages(tmp_path):
     }
     assert first["session"] == "sess-1" and first["transcript"] == "/tmp/t.jsonl"
     assert first["tool_use_id"] == "toolu_1" and first["outcome"] == "complete"
+    assert first["reason"] is None
     assert first["event"] == "PostToolUse" and first["source_id"].startswith("src-")
     assert counters(home) == {"results_delivered": 1, "fully_scanned": 1}
 
@@ -190,6 +191,7 @@ def test_undecodable_result_records_the_gap(tmp_path):
     [gap] = events(home)
     assert set(gap) == KEYS
     assert gap["finding_id"] is None and gap["outcome"] == "not_scanned"
+    assert gap["reason"] == "undecodable"
 
 
 @pytest.fixture
@@ -227,6 +229,7 @@ def test_partial_scan_is_logged(tmp_path):
     [gap] = events(home)
     assert set(gap) == KEYS
     assert gap["finding_id"] is None and gap["outcome"] == "partial"
+    assert gap["reason"] == "depth"
 
 
 def test_runs_under_dash_I_from_another_directory(tmp_path):
@@ -238,3 +241,92 @@ def test_runs_under_dash_I_from_another_directory(tmp_path):
     (elsewhere / "context_audit" / "__init__.py").write_text("raise SystemExit('shadowed')\n")
     p = run(home, event(text=CANARY), cwd=elsewhere)
     assert p.returncode == 0 and json.loads(p.stdout)["systemMessage"]
+
+
+def test_partial_reason_is_on_finding_records_too(tmp_path):
+    home = tmp_path / "state"
+    nested = "Results: 3 rows."
+    for _ in range(40):
+        nested = {"a": nested}
+    run(home, event(text=json.dumps({"deep": nested, "note": CANARY})))
+    logged = events(home)
+    assert any(e["finding_id"] for e in logged)
+    assert {(e["outcome"], e["reason"]) for e in logged} == {("partial", "depth")}
+
+
+def test_first_high_finding_is_chosen_by_natural_locator_order(tmp_path):
+    home = tmp_path / "state"
+    e = event()
+    blocks = [{"type": "text", "text": "Unrelated filler."} for _ in range(11)]
+    blocks[2] = {"type": "text", "text": CANARY}
+    blocks[10] = {"type": "text", "text": CANARY.replace("submit_feedback", "rate_answer")}
+    e["tool_response"] = blocks
+    p = run(home, e)
+    high = [x for x in events(home) if x["severity"] == "high"]
+    at2 = [x for x in high if x["locator"].startswith("content[2]")]
+    assert at2 and any(x["locator"].startswith("content[10]") for x in high)
+    assert at2[0]["finding_id"] in json.loads(p.stdout)["systemMessage"]
+
+
+def test_version_guard_message():
+    from context_audit import hook
+
+    assert hook.version_guard((3, 13, 0)) is None
+    assert hook.version_guard((3, 15, 1)) is None
+    assert hook.version_guard((3, 9, 6)) == {
+        "systemMessage": "context-audit: not scanning. "
+        "The hook needs Python 3.13 or newer but is running on 3.9."
+    }
+
+
+def _old_python() -> str | None:
+    for candidate in ("/usr/bin/python3", "/usr/local/bin/python3.9", "/usr/bin/python3.9"):
+        if not Path(candidate).exists():
+            continue
+        p = subprocess.run(
+            [candidate, "-I", "-c", "import sys; print(sys.version_info < (3, 13))"],
+            capture_output=True,
+            text=True,
+        )
+        if p.stdout.strip() == "True":
+            return candidate
+    return None
+
+
+OLD_PYTHON = _old_python()
+needs_old = pytest.mark.skipif(OLD_PYTHON is None, reason="no Python older than 3.13 found")
+
+
+@needs_old
+def test_old_interpreter_warns_and_exits_zero(tmp_path):
+    assert OLD_PYTHON
+    p = subprocess.run(
+        [OLD_PYTHON, "-I", str(HOOK)],
+        input=json.dumps(event(text=CANARY)),
+        capture_output=True,
+        text=True,
+        env={"CONTEXT_AUDIT_HOME": str(tmp_path / "state"), "PATH": "/usr/bin:/bin"},
+        cwd=tmp_path,
+    )
+    ver = subprocess.run(
+        [OLD_PYTHON, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert (p.returncode, p.stderr) == (0, "")
+    assert json.loads(p.stdout) == {
+        "systemMessage": "context-audit: not scanning. "
+        f"The hook needs Python 3.13 or newer but is running on {ver}."
+    }
+    assert not (tmp_path / "state").exists()
+
+
+@needs_old
+def test_hook_parses_on_the_old_interpreter(tmp_path):
+    assert OLD_PYTHON
+    p = subprocess.run(
+        [OLD_PYTHON, "-I", "-c", "import ast, sys; ast.parse(open(sys.argv[1]).read())", str(HOOK)],
+        capture_output=True,
+        text=True,
+    )
+    assert (p.returncode, p.stderr) == (0, "")

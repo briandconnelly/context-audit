@@ -9,10 +9,34 @@ only by its opaque source ID and the call's ``tool_use_id``.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import sys
-from pathlib import Path
+
+MIN_PYTHON = (3, 13)
+
+
+def version_guard(version_info: tuple) -> dict | None:
+    """The owner-facing message when this interpreter is too old, else None.
+
+    This and the check below must stay parseable by old interpreters (3.8+)."""
+    if tuple(version_info[:2]) >= MIN_PYTHON:
+        return None
+    running = "{}.{}".format(version_info[0], version_info[1])  # noqa: UP032
+    return {
+        "systemMessage": "context-audit: not scanning. The hook needs Python 3.13 or newer "
+        "but is running on " + running + "."
+    }
+
+
+if __name__ == "__main__":
+    _too_old = version_guard(sys.version_info)
+    if _too_old is not None:
+        sys.stdout.write(json.dumps(_too_old))
+        sys.stdout.flush()
+        sys.exit(0)
+
+import contextlib  # noqa: E402
+from pathlib import Path  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -37,6 +61,13 @@ def _str(value: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _natural(locator: str) -> tuple:
+    """Sort key that orders digit runs by value, so content[2] precedes content[10]."""
+    import re
+
+    return tuple((0, int(p), "") if p.isdigit() else (1, 0, p) for p in re.split(r"(\d+)", locator))
+
+
 def _try(write, *args, **kwargs) -> None:
     """A state write that may fail without silencing the rest of the hook."""
     with contextlib.suppress(state.StateError, OSError):
@@ -53,9 +84,10 @@ def _handle_result(event: dict, kind: str, root: Path | None, key_root: Path) ->
         _try(state.bump, root, results_delivered=1)
     ing = from_hook_event(event)
     result = scan_fields(ing.fields, state_root=key_root, own_tool=ing.tool)
-    outcome = ing.outcome
+    outcome, reason = ing.outcome, ing.reason
     if _RANK[result.outcome] > _RANK[outcome]:
-        outcome = result.outcome
+        outcome, reason = result.outcome, result.reason
+    reason = None if outcome == "complete" else reason
 
     if root:
         _try(state.bump, root, **{_COUNTER[outcome]: 1})
@@ -72,7 +104,9 @@ def _handle_result(event: dict, kind: str, root: Path | None, key_root: Path) ->
         empty = dict.fromkeys(("features", "severity", "rule_version", "digest", "locator"))
         if outcome != "complete":
             _try(
-                state.append_event, root, {**base, "finding_id": None, **empty, "outcome": outcome}
+                state.append_event,
+                root,
+                {**base, "finding_id": None, **empty, "outcome": outcome, "reason": reason},
             )
         for f in result.findings:
             record = {
@@ -84,12 +118,16 @@ def _handle_result(event: dict, kind: str, root: Path | None, key_root: Path) ->
                 "digest": f.digest,
                 "locator": f.locator,
                 "outcome": outcome,
+                "reason": reason,
             }
             _try(state.append_event, root, record)
 
     high = sorted(
         (f for f in result.findings if f.severity == "high"),
-        key=lambda f: (f.ranges[0][0], f.ranges[0][1]) if f.ranges else (f.locator, 0),
+        key=lambda f: (
+            _natural(f.ranges[0][0] if f.ranges else f.locator)
+            + ((f.ranges[0][1] if f.ranges else 0,),)
+        ),
     )
     if not high:
         return None
