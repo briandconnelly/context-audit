@@ -235,11 +235,10 @@ def test_folded_block_scalar_description(tmp_path):
     text = "---\nname: x\ndescription: >-\n  first line\n  second line\nother: y\n---\nbody\n"
     write(roots.claude_dir / "skills" / "f" / "SKILL.md", text)
     (s,) = enumerate_sources(roots)
-    fields = read_fields(s)
-    assert [(f.surface, f.text) for f in fields] == [
-        ("frontmatter", "first line second line"),
-        ("skill", "body\n"),
-    ]
+    fields = {f.locator: (f.surface, f.text) for f in read_fields(s)}
+    assert fields["frontmatter.description"] == ("frontmatter", "first line second line")
+    assert fields["body"] == ("skill", "body\n")
+    assert fields["frontmatter.unparsed"] == ("frontmatter", "name: x\nother: y")
 
 
 def test_literal_block_scalar_description(tmp_path):
@@ -268,3 +267,120 @@ def test_end_to_end_skill_canary_is_high(tmp_path):
     fields = [f for s in enumerate_sources(roots) for f in read_fields(s)]
     result = scan_fields(fields, state_root=tmp_path)
     assert any(f.severity == "high" for f in result.findings)
+
+
+def plugin_with_skill(roots: Roots, outside: Path) -> Path:
+    plug = install_plugin(roots)
+    write(plug / "skills" / "g" / "SKILL.md", "inside body")
+    write(outside / "mk" / "demo" / "1.0.0" / "skills" / "g" / "SKILL.md", CANARY)
+    return plug
+
+
+def swap_cache(roots: Roots, outside: Path) -> None:
+    cache = roots.claude_dir / "plugins" / "cache"
+    cache.rename(roots.claude_dir / "plugins" / "old-cache")
+    os.symlink(outside, cache)
+
+
+def test_ancestor_swapped_after_enumeration_reads_nothing_outside(tmp_path):
+    roots = make_roots(tmp_path)
+    outside = tmp_path / "outside"
+    plugin_with_skill(roots, outside)
+    sources = enumerate_sources(roots)
+    assert any(s.name == "g" and not s.skipped for s in sources)
+    assert all(
+        s.root in (None, roots.claude_dir, roots.claude_json.parent, roots.project) for s in sources
+    )
+    swap_cache(roots, outside)
+    assert CANARY not in repr([read_fields(s) for s in sources])
+
+
+def test_ancestor_swapped_before_enumeration_reads_nothing_outside(tmp_path):
+    roots = make_roots(tmp_path)
+    outside = tmp_path / "outside"
+    plugin_with_skill(roots, outside)
+    swap_cache(roots, outside)
+    sources = enumerate_sources(roots)
+    assert CANARY not in repr([read_fields(s) for s in sources])
+    assert any(s.name == "demo@mk" and s.skipped for s in sources)
+
+
+def test_symlinked_container_directory_is_reported(tmp_path):
+    roots = make_roots(tmp_path)
+    write(tmp_path / "outside" / "evil" / "SKILL.md", CANARY)
+    os.symlink(tmp_path / "outside", roots.claude_dir / "skills")
+    plug = install_plugin(roots)
+    write(tmp_path / "outcmd" / "x.md", CANARY)
+    os.symlink(tmp_path / "outcmd", plug / "commands")
+    sources = enumerate_sources(roots)
+    skipped = sorted(s.path.name for s in sources if s.skipped == "symlink-escape" and s.path)
+    assert skipped == ["commands", "skills"]
+    assert CANARY not in repr([read_fields(s) for s in sources])
+
+
+def test_file_in_place_of_directory_is_not_regular(tmp_path):
+    roots = make_roots(tmp_path)
+    write(roots.claude_dir / "skills" / "a" / "SKILL.md", "x")
+    from context_audit.inventory import _read
+
+    data, skipped = _read(roots.claude_dir, Path("skills/a/SKILL.md/deeper"), 100)
+    assert (data, skipped) == (b"", "not-regular")
+
+
+def fm(tmp_path: Path, header: str) -> dict[str, str]:
+    roots = make_roots(tmp_path)
+    write(roots.claude_dir / "skills" / "f" / "SKILL.md", f"---\n{header}---\nbody\n")
+    (s,) = enumerate_sources(roots)
+    return {f.locator: f.text for f in read_fields(s)}
+
+
+def test_plain_multiline_description(tmp_path):
+    got = fm(tmp_path, "description: first\n  second\n  third\n")
+    assert got["frontmatter.description"] == "first second third"
+    assert "frontmatter.unparsed" not in got
+
+
+def test_quoted_multiline_description(tmp_path):
+    got = fm(tmp_path, 'description: "first\n  second"\n')
+    assert got["frontmatter.description"] == "first second"
+    assert "frontmatter.unparsed" not in got
+
+
+def test_description_on_next_indented_line(tmp_path):
+    got = fm(tmp_path, "description:\n  " + CANARY + "\n")
+    assert got["frontmatter.description"] == CANARY
+
+
+def test_unrecognized_header_text_is_scanned(tmp_path):
+    got = fm(tmp_path, "description: ok\n- " + CANARY + "\n")
+    assert CANARY in got["frontmatter.unparsed"]
+
+
+def test_hook_prompt_locators_name_the_event(tmp_path):
+    roots = make_roots(tmp_path)
+    plug = install_plugin(roots)
+    one = [{"hooks": [{"type": "prompt", "prompt": "p"}]}]
+    write(plug / "hooks" / "hooks.json", json.dumps({"hooks": {"Stop": one, "SessionStart": one}}))
+    (s,) = by_kind(enumerate_sources(roots), "hook_prompt")
+    locs = {f.locator for f in read_fields(s)}
+    assert locs == {"hooks.Stop[0].hooks[0].prompt", "hooks.SessionStart[0].hooks[0].prompt"}
+
+
+def test_wrong_shaped_hooks_json_is_malformed(tmp_path):
+    roots = make_roots(tmp_path)
+    plug = install_plugin(roots)
+    write(plug / "hooks" / "hooks.json", json.dumps({"hooks": {"Stop": {"not": "a list"}}}))
+    hooks = [s for s in enumerate_sources(roots) if s.path and s.path.name == "hooks.json"]
+    assert [s.skipped for s in hooks] == ["malformed"]
+
+
+def test_malformed_and_relative_plugin_entries(tmp_path):
+    roots = make_roots(tmp_path)
+    reg = {
+        "version": 2,
+        "plugins": {"a@m": [{"x": 1}, {"y": 2}, {"installPath": "plugins/cache/rel"}]},
+    }
+    write(roots.claude_dir / "plugins" / "installed_plugins.json", json.dumps(reg))
+    sources = enumerate_sources(roots)
+    assert [s.skipped for s in sources] == ["malformed", "malformed", "outside-root"]
+    assert len({s.source_id for s in sources}) == 3
