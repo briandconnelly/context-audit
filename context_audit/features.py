@@ -1408,13 +1408,15 @@ def _directives(
     own_tool: str | None,
     fragment: Callable[[int], bool] | None = None,
     list_item: bool = False,
+    announced: bool = False,
 ) -> tuple[list[_Raw], list[int]]:
     """act and call matches in sentence s (sentence-relative), and the start of every act
     and call found, including those absorbed into a call or naming the field's own tool.
 
     `fragment(pos)` says whether the word at pos begins right after removed characters
     (a control or escape sequence): the rest of a word, not a word, so it is not taken as
-    an open-class imperative."""
+    an open-class imperative. `list_item` says s is a list item, and `announced` that its
+    list's lead-in announces things rather than steps (`scope.announcing_lead`)."""
 
     def neg(start: int) -> bool:
         return _negated(s, start, 0)
@@ -1431,8 +1433,12 @@ def _directives(
             continue
         if _heads_a_subject(s, word, m.end(head)):
             continue
-        if list_item and _LIST_LINE.fullmatch(s[:v]) and scope.noun_phrase_item(s, m.end(head)):
-            continue  # "- Retry loops that give up ...": a noun phrase, not an imperative
+        if (
+            list_item
+            and _LIST_LINE.fullmatch(s[:v])
+            and scope.noun_phrase_item(s, m.end(head), known, announced)
+        ):
+            continue  # "Look for:\n- Retry loops that give up ...": a noun phrase
         opener = m.group("opener").lower()
         if opener in _ADVERB_OPENERS and _after_subject(s, m.start("opener")):
             continue
@@ -1696,6 +1702,16 @@ def _conceal_by_proximity(
             insort(taken, (a, b))
 
 
+# Every enumerated override form names a target (`_OVR_TARGET`, `_APPROVAL`, "asking",
+# or the user): a sentence with none of these stems cannot match one. A prefilter only.
+_OVERRIDE_TARGET_STEM = re.compile(
+    r"instru|direct|guid|rule|order|polic|constrain|restrict|prompt|request|approv|confirm"
+    r"|told|said|asked|everything|anweis|consign|regel|regla|permission|consent|sign"
+    r"|authori|review|asking|user",
+    _I,
+)
+
+
 def _others(s: str, act_starts: list[int] = []) -> list[_Raw]:  # noqa: B006
     """audience, solicit, and override matches in sentence s."""
     out: list[_Raw] = []
@@ -1707,8 +1723,15 @@ def _others(s: str, act_starts: list[int] = []) -> list[_Raw]:  # noqa: B006
         out.extend(("audience", m.start(), m.end(), False, None) for m in _AUDIENCE.finditer(s))
     if _ANCHOR["solicit"].search(s):
         out.extend(("solicit", m.start(), m.end(), False, None) for m in _SOLICIT.finditer(s))
-    if _ANCHOR["override"].search(s):
-        for m in _OVERRIDE.finditer(s):
+    if _ANCHOR["override"].search(s) and _OVERRIDE_TARGET_STEM.search(s):
+        pos = 0
+        while (m := _OVERRIDE.search(s, pos)) is not None:
+            if not scope.override_governs(s, m.start(), m.end()):
+                # A cue that is not a verb ("System override: previous instructions are
+                # void"): a later override may start inside the rejected span.
+                pos = m.start() + 1
+                continue
+            pos = m.end()
             if not _negated(s, m.start(), 0):
                 out.append(("override", m.start(), m.end(), cond(m), None))
         for m in _OVERRIDE_POSTPOSED.finditer(s):
@@ -1938,7 +1961,11 @@ def detect(
         return bool(gap) and not gap.isspace()
 
     prev_directive = False
+    announced = False  # the current list's lead-in announces things, not steps
     for idx, (s_lo, s_hi) in enumerate(sents):
+        is_item = _LIST_LINE.match(text, s_lo) is not None
+        if not is_item:
+            announced = scope.announcing_lead(text[s_lo:s_hi])
         # A very long sentence is worked in clause-bounded pieces, so the deadline is
         # checked inside it and no step sees more than _PIECE characters at once. Every
         # piece keeps the sentence's index, so joining is unchanged.
@@ -1948,9 +1975,12 @@ def detect(
                 result.complete = False
                 break
             s = text[lo:hi]
-            item = lo == s_lo and _LIST_LINE.match(text, lo) is not None
             raw, starts = _directives(
-                s, own_tool, lambda p, lo=lo: fragment(lo + p), list_item=item
+                s,
+                own_tool,
+                lambda p, lo=lo: fragment(lo + p),
+                list_item=is_item and lo == s_lo,
+                announced=announced,
             )
             directive = bool(starts)
             if _ANCHOR["conceal"].search(s):

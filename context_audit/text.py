@@ -10,7 +10,9 @@ from __future__ import annotations
 import re
 import unicodedata
 from bisect import bisect_left, bisect_right
+from collections.abc import Callable
 from dataclasses import dataclass
+from functools import lru_cache, wraps
 
 SURFACES = frozenset(
     {
@@ -35,6 +37,7 @@ _FENCE = re.compile(r"^[ \t]*```.*?(?:^[ \t]*```[^\n]*|\Z)", re.DOTALL | re.MULT
 _BLOCKQUOTE = re.compile(r"^[ \t]*>[^\n]*", re.MULTILINE)
 _STRAIGHT_QUOTE = re.compile(r'"[^"\n]*"')
 _KEEP_CONTROLS = frozenset("\t\n\r\x0c")
+_ASCII_SPACE = frozenset(" \t\n\r\x0c")
 _CSI_CAP = 32  # longest CSI sequence removed whole
 _OSC_CAP = 256  # a control string with no terminator within this many characters is not swallowed
 _OSC_TERM = re.compile(r"[\x07\x9c\x1b]")
@@ -212,7 +215,11 @@ def _alternate_end(src: str, i: int) -> int:
     return k
 
 
+@lru_cache(maxsize=8)
 def normalize(field: Field) -> Normalized:
+    """The field's text normalized, with each kept character's original index and the
+    hidden runs removed. Cached: the scan and judging both normalize each field, and a
+    `Normalized` is immutable."""
     src = field.text
     alternate = field.reading == "alternate"
     terms = _Terminators(src)
@@ -235,6 +242,24 @@ def normalize(field: Field) -> Normalized:
     joined = False
     while i < size:
         c = src[i]
+        # Fast path, same result: a kept ASCII character with no pending separator or gap
+        # and no combining mark after it is its own NFKC form.
+        if (
+            gap < 0
+            and not held
+            and c < "\x7f"
+            and (c >= " " or c in _KEEP_CONTROLS)
+            and (i + 1 >= size or src[i + 1] < "\x80")
+        ):
+            if c in _ASCII_SPACE:
+                if out and out[-1] == " ":
+                    i += 1
+                    continue
+                c = " "
+            out.append(c)
+            origin.append(i)
+            i += 1
+            continue
         if c > "~" and c in _SEPARATORS and out and out[-1].isalnum():
             held.append(i)
             i += 1
@@ -339,6 +364,25 @@ def _break_count(run: str) -> int:
     return lines + 2 * run.count("\u2029")  # a paragraph separator is a blank line
 
 
+def _per_normalized[T](fn: Callable[[Normalized], list[T]]) -> Callable[[Normalized], list[T]]:
+    """Remember fn's result for the last few `Normalized` objects, by identity: detection
+    and judging both ask for a field's lines and sentences. Returns a fresh list each time."""
+    slots: list[tuple[Normalized, list[T]]] = []
+
+    @wraps(fn)
+    def wrapper(n: Normalized) -> list[T]:
+        for held, result in slots:
+            if held is n:
+                return list(result)
+        result = fn(n)
+        slots.insert(0, (n, result))
+        del slots[4:]
+        return list(result)
+
+    return wrapper
+
+
+@_per_normalized
 def line_breaks(n: Normalized) -> list[int]:
     """Normalized indexes of spaces that stand for at least one line break, found from the
     line-break characters of the source rather than by inspecting every space."""
@@ -391,6 +435,7 @@ def _line_spans(n: Normalized) -> list[tuple[int, int]]:
     return [(a, b) for a, b in spans if a < b]
 
 
+@_per_normalized
 def record_lines(n: Normalized) -> list[tuple[int, int]]:
     """Normalized spans of record lines: lines of list-like output that report something.
 
@@ -435,6 +480,7 @@ def _block_kind(text: str, at: int) -> str:
     return ""
 
 
+@_per_normalized
 def sentences(n: Normalized) -> list[tuple[int, int]]:
     """Spans of sentences in normalized text.
 
@@ -540,6 +586,7 @@ def _inline_code(src: str) -> list[tuple[int, int]]:
     return spans
 
 
+@_per_normalized
 def fenced(n: Normalized) -> list[tuple[int, int]]:
     """Normalized spans of quoted material: code fences, inline code, block quotes, quotations."""
     src = n.source

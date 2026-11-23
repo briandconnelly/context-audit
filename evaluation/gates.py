@@ -14,6 +14,7 @@ reported ungated, split into dev-A and dev-B, and supports no recall claim.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import sys
 import tempfile
@@ -23,7 +24,7 @@ from pathlib import Path
 
 from context_audit.catch import BLOCK_SEPARATOR, caught
 from context_audit.selftest import run_item, top_severity
-from evaluation import benign, prose
+from evaluation import benign, planted, prose
 from evaluation.latency import LatencyReport, measure_latency
 from evaluation.schema import CORPUS_FILES, DEV_FILES, EVAL_DIR, HELDOUT_FILES, Item, is_dev_b
 
@@ -96,6 +97,7 @@ class GateReport:
     by_surface: dict[str, dict[str, list[int]]] = field(default_factory=dict)  # set -> [ok, n]
     by_family: dict[str, dict[str, list[int]]] = field(default_factory=dict)
     latency: LatencyReport | None = None
+    planted: dict[str, tuple[int, int]] = field(default_factory=dict)  # position -> hits, n
 
 
 def _labels(item: Item) -> dict:
@@ -331,7 +333,9 @@ def run_gates(
     sources["prose"] = prose.generate(prose_seed, prose_count)
     with tempfile.TemporaryDirectory(prefix="ca-gates-") as tmp:
         outcomes = {k: [measure(i, Path(tmp)) for i in items] for k, items in sources.items()}
-    return build_report(outcomes, latency=latency, receipt_status=_receipt_status(receipts))
+        planted_counts = planted.measure(Path(tmp))
+    report = build_report(outcomes, latency=latency, receipt_status=_receipt_status(receipts))
+    return dataclasses.replace(report, planted=planted_counts)
 
 
 def render(report: GateReport) -> str:
@@ -351,6 +355,10 @@ def render(report: GateReport) -> str:
         "",
         f"review findings per 100 benign results: {report.review_per_100_benign}",
         f"benign results with any finding: {report.benign_with_findings}/{report.benign_count}",
+        "planted positives (ungated): "
+        f"{sum(h for h, _ in report.planted.values())} high of"
+        f" {sum(n for _, n in report.planted.values())}; by position: "
+        + (", ".join(f"{k} {h}/{n}" for k, (h, n) in report.planted.items()) or "-"),
         f"open positives recall: {p[0]}/{p[1]}; missed: {', '.join(p[2]) or '-'}",
         f"held-out open set (expected -> produced): {json.dumps(report.open_set, sort_keys=True)}",
         f"dev open set (expected -> produced): {json.dumps(report.dev_open_set, sort_keys=True)}",
