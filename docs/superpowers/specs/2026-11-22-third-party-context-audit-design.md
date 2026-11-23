@@ -1,7 +1,7 @@
 # Third-party context audit plugin: design
 
 Date: 2026-11-22.
-Status: approved by the owner on 2026-11-22 (third draft, after two independent critiques).
+Status: approved by the owner on 2026-11-22; revised the same day with the probe's results, which the owner also approved.
 Name: `context-audit` (plugin and repository).
 
 Each rule in this document has one home.
@@ -58,7 +58,7 @@ The owner wants a check that does not depend on the model noticing.
 
 Three were considered.
 
-- **A. Static audit plus a warn-only result hook.** Smallest, and never contacts a server. It leaves MCP tool descriptions and server instructions unchecked, because the documented hook events do not expose them.
+- **A. Static audit plus a warn-only result hook.** Smallest, and never contacts a server. It leaves MCP tool descriptions and server instructions unchecked, because no hook event exposes them; see Probe.
 - **B. A, plus opt-in per-server live listing, follow-on gating, and opt-in result redaction.** Covers tool descriptions and server instructions as seen by the audit's own client. Live listing runs or contacts third-party code.
 - **C. A proxy between Claude Code and every MCP server.** Sees everything before the model does. It rewires every server's configuration and becomes a critical path for all MCP use.
 
@@ -69,7 +69,7 @@ The design came from an independent attempt by Claude and Codex, a synthesis, an
 
 ## Build order
 
-1. **Probe.** Settles what the harness actually does; see Probe.
+1. **Probe.** Settles what the harness actually does; see Probe. Done on 2026-11-22.
 2. **Slice 1, warn-only.** Scanner, static inventory and scan, the result hook's warning, `show`, coverage accounting, self-test, and thin end-to-end fixtures.
 3. **Trial and owner checkpoint.** The owner uses slice 1 in ordinary work, then decides whether to continue; see Checkpoint.
 4. **Slice 2, approach B's additions.** Live listing, follow-on gating, redaction, snapshot history, the session-start diff, approvals, and the full skill scenario matrix.
@@ -144,6 +144,8 @@ Where features apply:
 One deterministic library used by everything else.
 
 - It normalizes text for matching and keeps a source map from every normalized span back to the original field and code-point range.
+- It accepts both shapes a tool result arrives in: a list of content blocks, and a single string of JSON when the result carried `structuredContent`.
+  In the second case the server's text blocks reach neither the hook nor the model, so there is nothing more to scan.
 - It returns structured findings: an opaque finding ID, source ID, surface, field locator, original ranges, feature IDs, severity, rule version, and a keyed digest of the span.
 - It treats all source text as inert data: nothing is interpolated into a command, loaded as code, or followed as a reference.
 - Budgets apply before expensive work: raw bytes read, decoding depth, file count, total work per run, match time, and output size. Patterns avoid worst-case backtracking.
@@ -191,7 +193,7 @@ Each behaviour is offered only where Probe has shown it works.
 | Event | Matcher | Behaviour |
 | --- | --- | --- |
 | `PostToolUse` | `mcp__.*` | Scan the result. Warn on high findings. Log review findings. |
-| `PostToolUseFailure` | `mcp__.*` | Scan error content. Warn on high findings. |
+| `PostToolUseFailure` | `mcp__.*` | Scan the event's error string. Warn on high findings. This event cannot replace anything. |
 | `PreToolUse` | `mcp__.*` | Record that a call was requested. *(slice 2)* Gate; see Follow-on gating. |
 | *(slice 2)* `SessionStart` | — | Hash-only diff of on-disk surfaces against the snapshot. Reports counts only. |
 
@@ -215,19 +217,23 @@ Two named outcomes, per frontend and permission mode:
 
 A path is direct only where Probe observed the message on a terminal.
 Everywhere else it is deferred, and the coverage report says which applies.
-v1 claims interactive terminal sessions; headless runs are deferred unless probed.
+The probe showed direct delivery for interactive terminal sessions in the default permission mode.
+Auto mode, which is the interactive default, and headless runs were not probed, so they are deferred until they are.
+
+A hook can also ask the harness to emit a terminal sequence that raises a desktop notification, without starting a process.
+That comes from the hooks reference and is untested; slice 1 probes it before offering it as a second direct path.
 
 ### Evidence
 
 The owner must be able to investigate a warning with default settings.
 
 - **Static sources** (skills, plugin files): `show` re-reads the file, verifies the span digest still matches, and prints the span with control characters escaped. If the file changed, it says so.
-- **Tool results:** the event log keeps an owner-local locator, the session's transcript path and the tool-use ID, both of which the hook receives. `show` reads the result back from the harness's own transcript. Nothing extra is stored.
+- **Tool results:** the event log keeps an owner-local locator, the session's transcript path and the tool-use ID, both of which the hook receives. `show` reads the result back from the harness's own transcript. Nothing extra is stored. The probe showed the transcript holds the result on the line carrying that tool-use ID.
+- **Redacted results:** after a replacement the transcript holds the replacement, not the original, so `show` can display only what the model saw. The original is recoverable only if the evidence store was on.
 - If the transcript is gone or does not contain the result, `show` reports **evidence unavailable**, and triage counts that as its own disposition.
 - An optional evidence store, off by default, keeps an excerpt of each matched span, capped at 200 characters. An excerpt can contain a secret.
 
-Whether the transcript holds tool results in a recoverable form is settled by Probe.
-If it does not, the owner decides at the Checkpoint whether to turn the evidence store on by default.
+When the owner enables redaction, the CLI says that the evidence store is then the only record of what was removed, and offers to enable it.
 
 Every third-party field printed to the owner is escaped, including names, paths, arguments, and URLs.
 
@@ -240,6 +246,9 @@ After a high finding that contains `call`, the named tool may be gated.
 - While a gate exists, every call to that tool in the session returns `ask`: the harness prompts the owner for that call. It is never an automatic denial.
 - A gate ends when the session ends, or when the owner approves the finding. It does not depend on observing the owner's answer, and it is not restored on resume.
 - Calls dispatched in the same batch as the flagged result cannot be stopped, and the design does not claim to.
+- The probe showed, in the default permission mode: the prompt appears even for a tool the owner pre-allowed; it shows the gate's reason; the tool runs only on acceptance; and choosing "don't ask again" does not silence the gate.
+- Declining a gate's prompt ends the agent's turn. The gate's reason text says so, so the owner knows a refusal stops the work in progress.
+- Two gated tools at once, parallel gated calls, and auto mode were not probed; slice 2 probes them before gating is offered there.
 - Gate updates are transactional, so parallel hooks cannot lose one another's writes.
 - If the state store is missing or corrupt, nothing is gated and `status` reports it.
 
@@ -250,11 +259,19 @@ When the owner enables it, the hook replaces a finding with a fixed placeholder 
 
 - the finding maps to one contiguous original range in a plain-text field;
 - the match is not the whole substantive content of the result;
-- the output shape is one Probe proved replaceable for that event;
+- the result arrived as a list of content blocks, the only shape the probe proved replaceable; structured, split, and oversized results are warn-only until probed;
 - every other decoded field value and content block is unchanged, and the text around the range within the edited field is unchanged.
 
 Otherwise it warns only.
-Redaction changes what is sent to the model next; it does not remove the text from the harness's own transcript.
+Redaction changes what is sent to the model next, and the harness's transcript then records the replacement; see Evidence.
+Other hooks on the same event still receive the original.
+
+### Oversized results
+
+The harness gives the hook the whole of a large result, but sends the model only a short preview and the path of a file holding the rest.
+The hook scans the whole result at delivery.
+If the agent later reads that file, the read is not an MCP tool call and the hook does not see it.
+A finding beyond the preview is therefore reported as found in text the model has not yet read, and the fixed note to the model says the saved file holds flagged text.
 
 ### State
 
@@ -352,8 +369,13 @@ The Claude session may be shown something different, because its identity, crede
 
 ## Probe
 
-The probe runs before anything else is built.
-The harness behaviour this design rests on comes from documentation and is untested.
+The probe ran on Claude Code 2.1.330 on 2026-11-22, before anything else was built.
+Its results are in `docs/research/2026-11-22-probe-results.md`, with detail in `docs/research/2026-11-22-probe-observations.md`; those two files are the record, and this section describes the method.
+Every behaviour in the table below was shown, with two exceptions.
+No hook event carried tool descriptions or server instructions, which is the expected absence.
+For the gate, two gated tools at once and parallel gated calls were not run.
+The results are exploratory: they came from the probe's own recording hook, so receipts are still owed; see Coverage status.
+A new harness build needs the probe run again.
 
 Order of work:
 
@@ -410,6 +432,8 @@ Release gates for slice 1, each a criterion on the frozen sample and not a claim
 - A seeded warning can be investigated by the owner with default settings, end to end.
 
 The audit skill is model-executed.
+Any test that launches Claude Code uses the isolation the probe established: no outside setting sources, a working directory outside the owner's home, a disposable profile, and blocked outbound network.
+Without the first two, the owner's own instruction files and skills enter the session under test.
 Slice 1 tests it on one model with a small fixed number of repetitions; the wider matrix is slice 2.
 Assertions are observable in the transcript: it runs `scan`, declares voided claims when the self-test fails, repeats no third-party text other than validated names, follows no embedded directive, runs none of the owner-only commands, and reports coverage gaps.
 
@@ -426,7 +450,7 @@ The owner then chooses: build slice 2, narrow the tool, or stop.
 ## Risks, ranked
 
 1. The tool is narrow by construction. High findings cover a small class, and all gates could pass while it rarely tells the owner anything; the Checkpoint exists to find that out cheaply.
-2. Incomplete visibility gives false assurance, especially for hooks that never run and runtime metadata the session sees but the audit client does not.
+2. Incomplete visibility gives false assurance, especially for hooks that never run, runtime metadata the session sees but the audit client does not, and the saved remainder of an oversized result.
 3. Authorization is implicit, so the scanner warns on some legitimate text and misses directives that look ordinary.
 4. Rewording, split directives, and indirect follow-ons evade deterministic rules.
 5. The tool's own reports, names, and logs reintroduce third-party text or expose sensitive result data.
@@ -459,6 +483,8 @@ Builder's calls, open to correction:
 - Hook behaviour on a finding: Hooks.
 - How the owner is told: Delivery.
 - How the owner investigates: Evidence.
+- Handling of large results: Oversized results.
+- Which result shapes are accepted: Scanner.
 - Showing validated names to the model: Audit skill.
 - Gate lifetime: Follow-on gating.
 - What an approval covers: Snapshots and approvals.
@@ -475,5 +501,5 @@ Builder's calls, open to correction:
 ## Owner questions
 
 None blocking.
-The owner approved the document with validated names in the skill's report (Audit skill).
-Both critiques preferred opaque IDs or owner-assigned aliases; this is revisited when slice 1 is planned.
+The owner approved the four changes that followed from the probe: Evidence and Redaction, Oversized results, Follow-on gating, and Delivery.
+Names in the skill's report stay as approved (validated names); both critiques preferred opaque IDs or owner-assigned aliases, and the slice 1 plan carries that as an open decision.
