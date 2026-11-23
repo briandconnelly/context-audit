@@ -7,7 +7,8 @@ The rule for the checkpoint is in the spec, `docs/superpowers/specs/2026-11-22-t
 
 Write down two numbers, with the date, before the first session of the trial:
 
-1. **Tolerable review burden:** the most warnings and review findings you will triage per week of ordinary work before the tool costs more than it gives.
+1. **Tolerable review burden:** the most on-screen warnings and high findings from `scan` you will triage with `show` per week of ordinary work before the tool costs more than it gives.
+   Review findings are counted at the end, not triaged one by one.
 2. **Least useful outcome that justifies slice 2:** for example, at least one true warning in the trial, or a stated number of true warnings per week.
 
 Also write down the trial's length or end condition.

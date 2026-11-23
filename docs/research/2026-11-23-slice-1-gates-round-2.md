@@ -7,6 +7,8 @@ This document contains no held-out item text.
 
 ## Result
 
+Note added 2026-11-23: after this measurement the owner relaxed gate 3b to at most 5 high findings in 100 held-out controls, so under the current rule 96/100 passes; see the Decisions section of `docs/superpowers/specs/2026-11-22-third-party-context-audit-design.md`.
+
 Five of six gates pass and one fails.
 In-scope recall on a fresh, independently written held-out set is 53 of 60 (88.3%) against a floor of 80%.
 Four of 100 held-out controls produce a high finding; the gate allows none.

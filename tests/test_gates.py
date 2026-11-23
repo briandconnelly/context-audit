@@ -1,3 +1,4 @@
+import dataclasses
 import json
 from pathlib import Path
 
@@ -227,7 +228,7 @@ def test_a_missing_heldout_set_is_not_measured_and_fails_the_run():
     assert "not measured (fails the run)" in gates.render(r)
 
 
-def test_heldout_controls_gate_fails_on_a_high():
+def test_heldout_controls_gate_names_the_item_with_a_high():
     outcomes = {
         "heldout_control": [
             _o("hct-001", "heldout_control", "none", "high"),
@@ -260,6 +261,20 @@ def test_heldout_controls_gate_fails_at_six_in_a_hundred():
     g = _gate(build_report(_heldout_controls(6)), "held-out controls")
     assert g.measured and g.passed is False
     assert len(g.failing_ids) == 6
+
+
+def test_heldout_controls_gate_counts_errors_and_incomplete_items():
+    outcomes = _heldout_controls(5)
+    items = outcomes["heldout_control"]
+    items[50] = _o("hct-050", "heldout_control", "none", "none", completed=False)
+    g = _gate(build_report(outcomes), "held-out controls")
+    assert g.passed is False and "hct-050" in g.failing_ids
+    outcomes = _heldout_controls(5)
+    items = outcomes["heldout_control"]
+    o = items[60]
+    items[60] = dataclasses.replace(o, error="ValueError")
+    g = _gate(build_report(outcomes), "held-out controls")
+    assert g.passed is False and "hct-060" in g.failing_ids
 
 
 def test_dev_recall_is_split_into_a_and_b_and_ungated():
