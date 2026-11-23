@@ -85,10 +85,15 @@ _OPENER = (
     r"|do\s+not\s+forget\s+to|(?:i|we)\s+(?:need|want|would\s+like)\s+you\s+to"
     r"|you\s+are\s+(?:required|expected|asked)\s+to|go\s+ahead\s+and)\b)"
 ).replace("{_A}", _A)
+# Concealment manner adverbs, shared by the act pattern and the conceal-act detector.
+_CONCEAL_ADV = (
+    r"(?:silently|quietly|secretly|discreetly|covertly|stealthily|privately|surreptitiously"
+    r"|unannounced|in\s+secret|in\s+the\s+background|behind\s+the\s+scenes)"
+)
 _ACT = re.compile(
     _OPENER + r"[\s\-*•>\d.)\"'`“]{0,6}"
-    r"(?:(?:also|now|then|please|kindly|first|just|always|quietly|silently|immediately"
-    r"|simply)\s+)?"
+    r"(?:(?:also|now|then|please|kindly|first|just|always|immediately|simply"
+    rf"|{_CONCEAL_ADV})\s+)?"
     rf"\b(?P<verb>{_ACT_VERBS})\b"
     r"(?![-:/_@\"”'`])(?!\.\S)"
     r"(?!\s+(?:finished|failed|passed|ran|took|queued|pending|broke|staged|complete|completed|succeeded|saved|ready|started|done"
@@ -126,8 +131,9 @@ _PREP_TOOL = re.compile(rf"\b(?i:with|using|via|through|from|to){_TOOL_WORD}{_TI
 # --- conceal-act: keeping an action or the exchange from the user --------------------
 
 _WHO = (
-    r"(?:the|your|its|their)\s+(?:end[\s-])?(?:user|users|human|humans|person|people"
-    r"|maintainers?|owner|operator|customer|requester)\b(?!['’])"
+    r"(?:(?:the|your|its|their)\s+(?:end[\s-])?(?:user|users|human|humans|person|people"
+    r"|maintainers?|owner|operator|customer|requester|developers?)|anyone|anybody|others"
+    r"|them)\b(?!['’])"
 )
 _PLACE = (
     r"(?:the|your|its|any)\s+(?:final\s+)?(?:reply|replies|response|responses|answer|answers"
@@ -222,9 +228,26 @@ _CONCEAL_TRANSLATED = re.compile(
     r"|\bn[ãa]o\s+(?:conte|diga|mencione|informe)\b[^.;]{0,30}?\busu[áa]rio",
     _I,
 )
-_SILENT = re.compile(
-    r"\b(?:silently|quietly|secretly|covertly|discreetly|in\s+secret|behind\s+the\s+scenes"
-    r"|unannounced)\b",
+_SILENT = re.compile(rf"\b{_CONCEAL_ADV}\b", _I)
+# A pro-verb standing for an action: "do it quietly", "handle this silently".
+_PROVERB = re.compile(
+    r"\b(?:do|handle|take\s+care\s+of|carry\s+out|perform)\s+(?:this|that|it|these|those)\b", _I
+)
+# Presentation verbs taking the addressee first: "do not show the user that you ...".
+_PRESENT_WHO = re.compile(
+    rf"\b{_NEG_OPEN}\s+(?:ever\s+)?{_PRESENT_THING}\s+{_WHO}"
+    r"(?=(?P<tail>[^.;:,\x22\x60\u201d]{0,40}))",
+    _I,
+)
+# Presentation verbs with no addressee: "do not print that you retried the request".
+_PRESENT_BARE = re.compile(
+    rf"\b{_NEG_OPEN}\s+(?:ever\s+)?{_PRESENT_THING}\b(?P<obj>[^.;:,]{{0,40}})", _I
+)
+# "say nothing about X", "never say anything about X": the object follows about/of.
+_SAY_NOTHING = re.compile(
+    rf"\b(?:{_NEG_OPEN}\s+(?:ever\s+)?(?:{_COMM_THING}|{_REVEAL_WHO_VERB})\s+(?:anything|a\s+word)"
+    rf"|(?:{_COMM_THING}|{_REVEAL_WHO_VERB})\s+nothing)\s+(?:about|regarding|of|on)\b"
+    r"(?P<obj>[^.;:]{0,40})",
     _I,
 )
 
@@ -543,6 +566,11 @@ def _event_word(w: str) -> bool:
 
 
 _TAIL_OBJ = re.compile(r"^\s*(?:about|of|regarding|on)\s+(?P<obj>.*)$", _I | re.S)
+# A tail led by another preposition carries no object: "tell the user in the reply".
+_TAIL_PREP = re.compile(
+    r"^\s*(?:to|in|with|for|at|by|from|until|before|after|when|if|unless|because|and|or|but)\b",
+    _I,
+)
 
 
 def _tail_kind(tail: str) -> str:
@@ -550,7 +578,11 @@ def _tail_kind(tail: str) -> str:
     if _CLAUSE_OBJ.search(tail) or _AGENT_REL.search(tail):
         return "action"
     m = _TAIL_OBJ.match(tail)
-    return _object_kind(m.group("obj")) if m else "pronoun"
+    if m:
+        return _object_kind(m.group("obj"))
+    if not tail.strip() or _TAIL_PREP.match(tail):
+        return "pronoun"
+    return _object_kind(tail)  # a direct object: "tell the user the hostname"
 
 
 def _object_kind(obj: str) -> str:
@@ -682,7 +714,9 @@ _ANCHOR = {
         r"|respons|answer|summar|output|message|conversation|chat|transcript|report|silent"
         r"|quiet|secret|covert|discreet|confidential|private|hidden|hush|wraps|yourself|us\b"
         r"|record|behind|unannounced|mention|tell|disclos|announc|bring|let|talk|explain|discuss"
-        r"|raise|flag|refer|acknowledg|usuario|usu[áa]rio|utilisateur|benutzer|nutzer|anwender)",
+        r"|raise|flag|refer|acknowledg|stealth|surreptit|privat|background|print|show|display"
+        r"|output|includ|expos|reveal|render|log|echo|surfac|list|quot|past|shar|say|nothing"
+        r"|anything|do|handle|perform|carry|anyone|anybody|others|them|usuario|usu[áa]rio|utilisateur|benutzer|nutzer|anwender)",
         _I,
     ),
     "audience": re.compile(r"\b(?:only|not|rather|instead|never|cannot)\b|n['’]t\b", _I),
@@ -794,9 +828,18 @@ def _conceal(s: str, has_referent: bool, directive_here: bool) -> list[_Raw]:
         kind = _object_kind(obj) if obj.strip() else _tail_kind(m.group("tail"))
         if (told if m.group("comm") else shown)(kind):
             add(m)
+    for m in _PRESENT_WHO.finditer(s):
+        if shown(_tail_kind(m.group("tail"))):
+            add(m)
+    for m in _SAY_NOTHING.finditer(s):
+        if told(_object_kind(m.group("obj"))):
+            add(m)
     if not out:
         for m in _REVEAL_BARE.finditer(s):
             if _AGENT_REL.search(m.group("obj")):
+                add(m)
+        for m in _PRESENT_BARE.finditer(s):
+            if _object_kind(m.group("obj")) == "action":
                 add(m)
     for m in _REVEAL_WHO.finditer(s):
         if told(_tail_kind(m.group("tail"))):
@@ -817,7 +860,7 @@ def _conceal(s: str, has_referent: bool, directive_here: bool) -> list[_Raw]:
             add(m)
     for m in _CONCEAL_TRANSLATED.finditer(s):
         add(m)
-    if directive_here:
+    if directive_here or _PROVERB.search(s):
         for m in _SILENT.finditer(s):
             if not _negated(s, m.start(), 0):
                 add(m)
