@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from probe import markers
+from probe.fake_mcp import DIRECTIVE
 
 SERVER = Path(__file__).resolve().parent.parent / "probe" / "fake_mcp.py"
 
@@ -75,7 +76,7 @@ def test_initialize_and_list_carry_markers(server):
     assert markers.INSTRUCTIONS in init["instructions"]
     assert init["serverInfo"]["name"] == "probe"
     tools = {t["name"]: t for t in server.request("tools/list")["result"]["tools"]}
-    assert len(tools) == 7
+    assert len(tools) == 10
     echo = tools["echo_text"]
     assert markers.TOOL_DESCRIPTION in echo["description"]
     (param,) = echo["inputSchema"]["properties"].values()
@@ -139,3 +140,86 @@ def test_counter_records_each_call(server, counter):
     server.call("echo_text")
     lines = [json.loads(line) for line in counter.read_text().splitlines()]
     assert lines == [{"tool": "follow_on"}, {"tool": "echo_text"}]
+
+
+SHAPES = ("text", "structured", "split", "big", "over-budget")
+
+
+def test_directive_tools_are_listed(server):
+    tools = {t["name"]: t for t in server.request("tools/list")["result"]["tools"]}
+    assert {"echo_directive", "fail_directive", "submit_feedback"} <= set(tools)
+    assert tools["echo_directive"]["inputSchema"]["properties"]["shape"]["enum"] == list(SHAPES)
+
+
+@pytest.mark.parametrize("shape", SHAPES)
+def test_echo_directive_carries_the_canary_in_each_shape(server, shape):
+    result = server.call("echo_directive", {"shape": shape})["result"]
+    if shape == "structured":
+        assert DIRECTIVE in json.dumps(result["structuredContent"])
+        assert DIRECTIVE not in result["content"][0]["text"]
+    elif shape == "split":
+        assert len(result["content"]) == 2
+        assert DIRECTIVE in result["content"][1]["text"]
+        assert DIRECTIVE not in result["content"][0]["text"]
+    elif shape == "over-budget":
+        text = text_of({"result": result})
+        assert len(text) == 200_000 and DIRECTIVE in text[:1000]
+    elif shape == "big":
+        text = text_of({"result": result})
+        assert len(text) == 140_000 and text.endswith(DIRECTIVE)
+    else:
+        assert DIRECTIVE in text_of({"result": result})
+
+
+def test_fail_directive_is_a_tool_error_carrying_the_canary(server):
+    result = server.call("fail_directive")["result"]
+    assert result["isError"] is True
+    assert DIRECTIVE in text_of({"result": result})
+
+
+def test_submit_feedback_is_benign(server):
+    assert "recorded" in text_of(server.call("submit_feedback"))
+
+
+def _hook_output(tmp_path, event):
+    hook = Path(__file__).resolve().parent.parent / "context_audit" / "hook.py"
+    p = subprocess.run(
+        [sys.executable, "-I", str(hook)],
+        input=json.dumps(event),
+        capture_output=True,
+        text=True,
+        env={"CONTEXT_AUDIT_HOME": str(tmp_path / "state"), "HOME": str(tmp_path)},
+        timeout=30,
+    )
+    return json.loads(p.stdout) if p.stdout else None
+
+
+@pytest.mark.parametrize("shape", SHAPES)
+def test_the_packaged_hook_flags_each_directive_shape(server, tmp_path, shape):
+    result = server.call("echo_directive", {"shape": shape})["result"]
+    # As the harness delivers it: structuredContent as compact JSON, else the blocks.
+    response = (
+        json.dumps(result["structuredContent"]) if shape == "structured" else (result["content"])
+    )
+    event = {
+        "hook_event_name": "PostToolUse",
+        "tool_name": "mcp__probe__echo_directive",
+        "tool_use_id": "toolu_x",
+        "mcp_server": {"name": "probe"},
+        "tool_response": response,
+    }
+    out = _hook_output(tmp_path, event)
+    assert out is not None and "flagged" in out["systemMessage"]
+
+
+def test_the_packaged_hook_flags_the_directive_error(server, tmp_path):
+    text = text_of({"result": server.call("fail_directive")["result"]})
+    event = {
+        "hook_event_name": "PostToolUseFailure",
+        "tool_name": "mcp__probe__fail_directive",
+        "tool_use_id": "toolu_x",
+        "mcp_server": {"name": "probe"},
+        "error": text,
+    }
+    out = _hook_output(tmp_path, event)
+    assert out is not None and "flagged" in out["systemMessage"]

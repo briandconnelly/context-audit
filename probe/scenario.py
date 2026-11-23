@@ -19,6 +19,8 @@ class HookSpec:
     matcher: str | None
     mode: str  # record | message | replace | ask
     label: str
+    # The hook program; None means the recording hook, probe/hooks/record.py.
+    script: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -31,6 +33,7 @@ class Evidence:
     transcript: Path | None
     screen: str = ""
     steps_seen: tuple[bool, ...] = ()
+    raw: bytes = b""  # the terminal's raw output, escape sequences included
 
 
 Check = Callable[[Evidence], tuple[Outcome, str]]
@@ -55,6 +58,14 @@ class Scenario:
     # Let the CLI read user, project, and local settings and instruction files, as it does by
     # default. Only the isolation canary wants this.
     load_outside_settings: bool = False
+    # Passed as --plugin-dir: a plugin to load for this run.
+    plugin_dir: Path | None = None
+    # Extra environment for the CLI and its hooks; "{run_dir}" in a value becomes the run directory.
+    env: dict[str, str] = field(default_factory=dict)
+    # Run first; unless its check reports "shown", this scenario's outcome is inconclusive.
+    baseline: Scenario | None = None
+    # Called with the evidence after the run and before the check, to gather more of it.
+    after: Callable[[Evidence], None] | None = None
 
 
 @dataclass(frozen=True)

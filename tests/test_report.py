@@ -94,3 +94,11 @@ def test_report_lists_what_was_not_probed(tmp_path):
     assert "two gated tools" in section
     assert "parallel gated calls" in section
     assert "proceeds as written" not in text
+
+
+def test_name_with_a_trailing_newline_is_not_a_safe_name():
+    # Minor 1: `$` accepted "x\n"; names must match in full.
+    from context_audit.report import safe_name
+
+    assert safe_name("plain-name", "src-0123abcd") == "plain-name"
+    assert safe_name("x\n", "src-0123abcd") == "src-0123abcd"

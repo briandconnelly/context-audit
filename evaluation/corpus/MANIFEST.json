@@ -1,0 +1,24 @@
+{
+  "files": {
+    "corpus/canaries.jsonl": "d32d2519ad4628d1ba4f56648c689114038985e29dd71f559efbe0a2a8e734bb",
+    "corpus/controls.jsonl": "0866ea468b5861a4c89d37314ae9c9dff007ada46c08eacb1f707f1457c108cf",
+    "corpus/paired.jsonl": "24be607f6ce1b2f6da16cd85a6dfa0c50dae546cf9cd4e3b78fc83a7f298c117",
+    "corpus/positives.jsonl": "2c3f325f6c5600263fa4c8a0a01a2fbc2edfd173d93e1565ee54cef8914d0b26",
+    "dev/in_scope.jsonl": "012c84db31c7b051faf5640e50c4067302f0f568ceef5e51767cfbc45a9f0b40",
+    "dev/open_set.jsonl": "93cd8a343ac973a3c80e1d7845e5ffbd682eacc482e8b2667f9fc8707fa4f139",
+    "heldout/controls.jsonl": "865be1812dd1e7ecdb40c3be487666b4aeb44a2713e277bf165078ddb82a92e7",
+    "heldout/in_scope.jsonl": "b26fc018eb66cb46c245822e569689ed5f678d16de185454051f89b3c495e26a",
+    "heldout/open_set.jsonl": "5369b1c4cd304666bf1cbc81338c29512fd54edfde2d521412ea9dbfaa9e3ddc"
+  },
+  "counts": {
+    "corpus/canaries.jsonl": 52,
+    "corpus/controls.jsonl": 150,
+    "corpus/paired.jsonl": 22,
+    "corpus/positives.jsonl": 50,
+    "dev/in_scope.jsonl": 60,
+    "dev/open_set.jsonl": 40,
+    "heldout/controls.jsonl": 100,
+    "heldout/in_scope.jsonl": 60,
+    "heldout/open_set.jsonl": 40
+  }
+}

@@ -78,8 +78,33 @@ Seen once, not kept: without that flag, an interactive session on this build sta
   Seen in evidence: Claude Code first sends an unauthenticated request to `/api/hello`.
 - Seen once, not kept: a fresh profile's interactive onboarding stopped with a connection error naming the real API host.
   The probe seeds the profile as already onboarded, so first-run behaviour is not covered.
-- From the hooks reference, untested: `terminalSequence` lets a hook raise a desktop notification without starting a process.
+- From the hooks reference: `terminalSequence` lets a hook raise a desktop notification without starting a process; see Packaged hooks for the probe of it.
   The design dropped operating-system notifications because hooks start no child processes; this field would allow one.
+
+## Packaged hooks
+
+These runs load this repository with `--plugin-dir`, so the hook is reached through `hooks/hooks.json` and `bin/context-audit-hook` and writes to a state directory inside the run directory.
+The scenarios are in `probe/scenarios/packaged.py`; evidence is under `runs/task12-packaged-r1/`, which is local and not committed.
+The routing gate reported `shown` in the same invocation.
+Each scenario ran a baseline first, the same run with a benign tool, and every baseline was clean: the packaged hook ran, and there was no finding, owner message, model note, or notification.
+These outcomes are the receipts `status` reads, for Claude Code 2.1.330 and plugin 0.0.0.
+Each receipt holds only for its frontend and permission mode: terminal runs used `--permission-mode default`, and headless runs passed no mode and pre-allowed the tools (`pre-allowed`).
+
+- Checked: for a text, structured, and split result carrying the canary directive, the counters show the result fully scanned and the event log holds a high finding for the call (`pkg-result-text`, `pkg-result-structured`, `pkg-result-split`).
+- Checked: a large result that fits the scanner's budgets, 140,000 characters with the directive at the end, was fully scanned and logged as a high finding, and the model's next request did not carry the directive, so it took the oversized path (`pkg-result-large-in-budget`).
+  Seen in evidence: the model received a preview and the note "Output too large (138.5KB). Full output saved to" a file in the profile.
+  Seen in evidence: the full result, directive included, was sent to the token-counting endpoint (`/v1/messages/count_tokens`), which is not a scripted model turn.
+  Its filler is lines of `x`, chosen so the scan finishes inside the 0.12-second time budget; this receipt says nothing about large results of other text.
+- Checked: a 200,000-character result with the directive in its first 1,000 characters was counted partly scanned, a gap record with outcome `partial` and reason `byte-budget` was logged, the directive still produced a high finding, and the next request held the plain `MODEL_NOTE`, not the oversized one (`pkg-result-over-budget`).
+  Its baseline, a benign 200,000-character result, was counted partly scanned with no finding and no note.
+- Checked: a tool error carrying the canary reached the hook on `PostToolUseFailure` and was logged as a high finding (`pkg-error`).
+- Checked: `hookSpecificOutput.additionalContext` from a `PostToolUseFailure` hook is shown: `MODEL_NOTE` was in the next request to the stand-in.
+  Seen in evidence: it arrives as a system block labelled `PostToolUseFailure:<tool> hook additional context:`.
+- Checked: on a terminal in the default permission mode, the fixed `SYSTEM_MESSAGE` with its finding ID was on screen and in no request, and `MODEL_NOTE` was in the next request (`pkg-direct-message`).
+- Checked: `context-audit show` for the logged finding, run with a temporary `HOME`, exited 0 and printed two spans of the canary, each at least 20 characters, read back from the transcript the harness wrote (`pkg-transcript-readback`).
+- Checked: a hook output with `terminalSequence` set to an OSC 9 notification put that exact sequence into the raw terminal bytes (`pkg-notification`).
+  This ran through a probe wrapper hook, `probe/hooks/notify.py`, beside the packaged hook; the plugin's hook does not emit it, and whether to offer it is the owner's decision.
+- Seen once, not kept: outside the harness, a 140,000-character result of short sentences or digit lines took longer than the scanner's 0.12-second time budget and was marked partly scanned.
 
 ## Not probed
 
