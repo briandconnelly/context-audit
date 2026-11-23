@@ -102,6 +102,39 @@ _ACT = re.compile(
     r"(?=(?P<after>\s+\w{1,10})?)",
     _I,
 )
+# A verb-class word that is a noun heading the subject of a finite verb is not an imperative:
+# "Update checks run nightly.", "Delete operations are logged.", "Sync job runs nightly."
+_FINITE_AUX = "is|are|was|were|has|have|had|will|would|can|could|may|might|must|should|do|does|did"
+# Present-tense verbs in their plural form: counted only after a noun ending in "s".
+_FINITE_PLURAL = (
+    "run|show|take|fail|range|start|log|appear|contain|include|require|need|happen|occur"
+    "|remain|depend|exist|vary"
+)
+_FINITE_SINGULAR = (
+    "opens|takes|fails|appears|contains|includes|requires|needs|happens|occurs|remains"
+    "|depends|exists|varies"
+)
+# Forms that as often belong to the object, as a plural noun ("send error logs to ...") or
+# an adjective ("delete files open in ..."): counted only when the next word does not
+# continue an object.
+_FINITE_OR_OBJECT = "runs|shows|starts|logs|ranges|open"
+_OBJECT_CONTINUES = (
+    "to|from|with|via|using|through|into|for|and|or|of|in|on|at|by|older|newer|before|after"
+    "|that|which|than"
+)
+# Words after the verb that are not the head of a subject: "Remove what is left."
+_NOT_A_SUBJECT = (
+    "what|whatever|which|whichever|who|whoever|whom|me|us|you|him|they|we|he|she|i|both"
+    "|either|neither|none|others"
+)
+_SUBJECT_THEN_VERB = re.compile(
+    rf"\s+(?!(?:{_NOT_A_SUBJECT})\b)(?P<noun>\w[\w'-]*)\s+"
+    rf"(?:(?:{_FINITE_AUX}|{_FINITE_SINGULAR})\b|(?P<plural>{_FINITE_PLURAL})\b"
+    rf"|(?:{_FINITE_OR_OBJECT})\b(?=\s+(?!(?:{_OBJECT_CONTINUES})\b)[A-Za-z]))",
+    _I,
+)
+# Verbs that take a clause: "Verify services are running." is an imperative.
+_CLAUSE_VERBS = frozenset({"check", "verify", "confirm"})
 # Verb-specific idioms that are not directives: "Set to `x`" (a parameter's meaning),
 # "Use when ..." (a skill's trigger).
 _ACT_IDIOM = {
@@ -126,7 +159,8 @@ _CALL_BARE = re.compile(rf"\b(?P<verb>{_CALL_VERB}){_TOOL_WORD}{_BARE}")
 # "when you call `tool`" describes a call the agent makes; it does not direct one.
 _DESCRIBED = re.compile(r"\b(?:when|whenever|if|after|before|once|until)\s+you\s+$", _I)
 # "fetch the details via `tool`": a tool named after an action verb in the same clause.
-_PREP_TOOL = re.compile(rf"\b(?i:with|using|via|through|from|to){_TOOL_WORD}{_TICK}")
+_TOOL_PREPS = "with|using|via|through|from|to"
+_PREP_TOOL = re.compile(rf"\b(?i:{_TOOL_PREPS}){_TOOL_WORD}{_TICK}")
 
 # --- conceal-act: keeping an action or the exchange from the user --------------------
 
@@ -760,6 +794,20 @@ def _clause(text: str, pos: int, lo: int, hi: int) -> tuple[int, int]:
 _Raw = tuple[str, int, int, bool, str | None]  # feature, start, end, conditioned, tool
 
 
+def _heads_a_subject(s: str, verb: str, end: int) -> bool:
+    """Whether the verb-class word ending at `end` is a noun in the subject of a finite verb:
+    it is followed by a noun-like word and then a finite verb."""
+    if verb.lower() in _CLAUSE_VERBS:
+        return False
+    m = _SUBJECT_THEN_VERB.match(s, end)
+    if m is None:
+        return False
+    noun = m.group("noun").lower()
+    if noun in _FUNCTION_WORDS:
+        return False
+    return noun.endswith("s") if m.group("plural") else True
+
+
 def _directives(s: str, own_tool: str | None) -> tuple[list[_Raw], bool]:
     """act and call matches in sentence s (sentence-relative), and whether any exist."""
 
@@ -771,6 +819,8 @@ def _directives(s: str, own_tool: str | None) -> tuple[list[_Raw], bool]:
         v = m.start("verb")
         after = (m.group("after") or "").strip().lower()
         if after in _ACT_IDIOM.get(m.group("verb").lower(), ()):
+            continue
+        if _heads_a_subject(s, m.group("verb"), m.end("verb")):
             continue
         if not neg(v):
             acts.append((v, _clause(s, v, 0, len(s))[1]))
@@ -978,25 +1028,54 @@ _CONTINUES = frozenset(
     }
 )
 _LINE_LEAD = re.compile(r"[\s\-*•>\d.)]*(?=\w)")
+# A line that opens a directive: an imperative verb, then a word that can only start its
+# object. "Send opens ...", "Update 4 ...", "Call logs ..." and "Run Configuration" do not.
+_LINE_DIRECTIVE = re.compile(
+    rf"(?:{_ACT_VERBS})\s+"
+    r"(?:(?:a|an|the|this|that|these|those|any|all|every|each|no"
+    rf"|it|them|me|us|your|my|its|their|{_TOOL_PREPS})\b|`[A-Za-z_])",
+    _I,
+)
+_LIST_LINE = re.compile(r"(?:[-*+]|\d+[.)]) ")
+_KEY_VALUE_LINE = re.compile(r"[A-Za-z][\w-]*(?: [\w-]+){0,2}: \S")
+_SHORT_LINE = 40  # an unpunctuated line this short is a label or a step, not wrapped prose
+
+
+def _complete_by_form(text: str, lo: int, hi: int) -> bool:
+    """Whether the line text[lo:hi] is complete without closing punctuation: a list item, a
+    heading, a table row, a `Key: value` line, or a short line ending in a letter or digit."""
+    if text.startswith(("#", "|"), lo) or _LIST_LINE.match(text, lo, hi):
+        return True
+    if _KEY_VALUE_LINE.match(text, lo, hi):
+        return True
+    return hi - lo <= _SHORT_LINE and text[hi - 1].isalnum()
 
 
 def _mark_line_starts(n: Normalized) -> str:
-    """n.text with each line break that starts a fresh line written as a newline (same
-    length), so imperative openers anchored at a sentence start also hold at a line start.
+    """n.text with each line break that starts a directive line written as a newline (same
+    length), so imperative openers anchored at a sentence start also hold at that line start.
 
-    A line starts fresh when its first word is capitalised and the previous line does not
-    end on a word that needs a continuation.
+    Wrapped prose often starts a line with a capitalised noun that is also a verb, so a line
+    start counts only when the previous line is complete by its form and does not end on a
+    word that needs a continuation, and the line opens with a capitalised imperative verb
+    followed by a word that starts its object.
     """
     text = n.text
     chars: list[str] | None = None
+    line = 0  # start of the line that ends at the break being looked at
     for i in line_breaks(n):
+        lo, line = line, i + 1
         if i == 0 or text[i - 1] in ".!?:,-(":
             continue  # already a sentence start, or a line that plainly continues
         lead = _LINE_LEAD.match(text, i + 1)
         first = lead.end() if lead else i + 1
         if first >= len(text) or not text[first].isupper():
             continue
+        if not _LINE_DIRECTIVE.match(text, first):
+            continue
         if text[text.rfind(" ", 0, i) + 1 : i].lower() in _CONTINUES:
+            continue
+        if not _complete_by_form(text, lo, i):
             continue
         if chars is None:
             chars = list(text)

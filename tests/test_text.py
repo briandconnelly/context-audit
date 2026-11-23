@@ -366,3 +366,92 @@ def test_round_3_inputs_are_linear(text):
         sentences(n)
         fenced(n)
         assert time.perf_counter() - start < 0.5, reading
+
+
+# --- round 4: separators inside words, ordinary emoji and non-Latin joiners ---
+
+
+@pytest.mark.parametrize("sep", ["\u2028", "\u2029"])
+def test_separator_inside_a_word_joins_and_is_hidden(sep):
+    n = normalize(field("Sub" + sep + "mit it." + sep + "Then 4" + sep + "2 go" + sep + " on"))
+    assert n.text == "Submit it. Then 42 go on"
+    assert n.hidden == ((3, 4, "invisible"), (18, 19, "invisible"))
+    assert original_range(n, 0, 6) == (0, 7)
+
+
+def test_separator_inside_a_word_is_a_line_break_in_the_alternate_reading():
+    n = normalize(Field("s", "skill", "body", "docs\u2028Submit it", reading="alternate"))
+    assert n.text == "docs Submit it" and n.hidden == ()
+    assert [span_text(n, s) for s in sentences(n)] == ["docs Submit it"]
+    assert normalize(field("docs\u2028Submit it")).text == "docsSubmit it"
+    # Inside a word the alternate reading joins too, and reports the separator.
+    n = normalize(Field("s", "skill", "body", "Sub\u2028mit it", reading="alternate"))
+    assert n.text == "Submit it" and n.hidden == ((3, 4, "invisible"),)
+
+
+def test_separators_and_removed_characters_between_letters_join():
+    n = normalize(field("Sub\u00ad\u2028\u200bmit"))
+    assert n.text == "Submit"
+    assert n.hidden == ((3, 5, "invisible"), (5, 6, "zero-width"))
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("work \u2764\ufe0f done", "work \u2764 done"),
+        ("\U0001f468\u200d\U0001f469\u200d\U0001f467", "\U0001f468\U0001f469\U0001f467"),
+        ("\u2764\ufe0f\u200d\U0001f525", "\u2764\U0001f525"),
+        ("\U0001f469\U0001f3fd\u200d\U0001f4bb", "\U0001f469\U0001f3fd\U0001f4bb"),
+        ("\u0915\u094d\u200d\u0937", "\u0915\u094d\u0937"),
+        ("\u0645\u06cc\u200c\u062e\u0648", "\u0645\u06cc\u062e\u0648"),
+        ("\u845b\U000e0100\u98fe", "\u845b\u98fe"),
+    ],
+)
+def test_ordinary_joiners_and_variation_selectors_are_removed_silently(text, expected):
+    n = normalize(field(text))
+    assert n.text == expected
+    assert n.hidden == ()
+
+
+@pytest.mark.parametrize(
+    "text,kinds",
+    [
+        ("a\ufe0fb", ["invisible"]),  # after an ASCII letter
+        ("1\ufe0f\u20e3", ["invisible"]),  # after an ASCII digit
+        ("\ufe0fgo", ["invisible"]),  # at the start of a field
+        ("x\n\ufe0fgo", ["invisible"]),  # at the start of a line
+        ("go \ufe0f", ["invisible"]),  # after whitespace
+        ("go.\ufe0f", ["invisible"]),  # after ASCII punctuation
+        ("\u2764\ufe0f\ufe0f", ["invisible"]),  # only the first selector follows a base
+        ("a\u200db", ["zero-width"]),
+        ("\u0915\u200db", ["zero-width"]),  # an ASCII letter on one side
+        ("\u0915\u200d", ["zero-width"]),  # at the end of a field
+        ("\u200d\u0915", ["zero-width"]),
+        ("\u0915\u200c \u0915", ["zero-width"]),  # next to whitespace
+        ("\u0915\u200c.\u0915", ["zero-width"]),  # next to ASCII punctuation
+        ("\u0915\u200b\u0915", ["zero-width"]),  # a zero-width space is never ordinary
+    ],
+)
+def test_joiners_and_selectors_elsewhere_are_still_hidden(text, kinds):
+    assert [k for _, _, k in normalize(field(text)).hidden] == kinds
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "\u2028" * 200_000,
+        "a\u2028" * 100_000,
+        "a" + "\u2028" * 200_000 + "b",
+        "\u200d" * 200_000,
+        "\u2764\ufe0f\u200d" * 60_000,
+        "\ufe0f" * 200_000,
+    ],
+    ids=["ls", "ls-in-words", "ls-run-in-word", "zwj", "emoji-zwj", "vs"],
+)
+def test_round_4_inputs_are_linear(text):
+    for reading in ("primary", "alternate"):
+        start = time.perf_counter()
+        n = normalize(Field("s", "skill", "body", text, reading=reading))
+        sentences(n)
+        fenced(n)
+        assert time.perf_counter() - start < 0.5, reading

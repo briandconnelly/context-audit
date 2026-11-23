@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import re
 import time
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from context_audit.features import Match, detect
-from context_audit.rules import Finding, judge
-from context_audit.text import Field, normalize
+from context_audit.rules import HIGH_TABLE, Finding, judge
+from context_audit.text import Field, has_second_reading, normalize
 
 _SENTENCE_END = re.compile(r"[.!?](?=\s|$)|\n")
 _WHITESPACE = re.compile(r"\s")
@@ -58,7 +59,7 @@ def scan_fields(
     remaining = budget.max_bytes
     scanned: list[Field] = []
     matches: dict[int, list[Match]] = {}
-    # The alternate reading of escape sequences, only for fields that hold one.
+    # The alternate reading, only for fields whose text can be read a second way.
     alt_fields: dict[int, Field] = {}
     alt_matches: dict[int, list[Match]] = {}
     reason = ""
@@ -81,7 +82,7 @@ def scan_fields(
         scanned.append(f)
         remaining -= size
         complete = found.complete
-        if complete and any(kind == "control" for _, _, kind in n.hidden):
+        if complete and has_second_reading(n):
             alt = replace(f, reading="alternate")
             alt_found = detect(alt, normalize(alt), own_tool=own_tool, deadline=deadline)
             alt_fields[idx] = alt
@@ -94,40 +95,86 @@ def scan_fields(
             break
     findings = judge(scanned, matches, state_root) if any(matches.values()) else []
     if alt_fields:
-        findings = _merge_alternate(findings, scanned, matches, alt_fields, alt_matches, state_root)
+        fields = [alt_fields.get(i, f) for i, f in enumerate(scanned)]
+        merged = {i: alt_matches.get(i, m) for i, m in matches.items()}
+        if any(merged.values()):
+            findings = _merge_alternate(findings, judge(fields, merged, state_root))
     outcome = "partial" if reason else "complete"
     return ScanResult(tuple(findings), outcome, reason, len(scanned))
 
 
 _RANK = {"review": 1, "high": 2}
+# Features a high finding is joined from. A lone finding of one of these is redundant once
+# the other reading reports a high finding over the same text.
+_JOINABLE = frozenset().union(*HIGH_TABLE)
+_Key = tuple[str, str]  # source_id, locator: one field
+_Cover = dict[_Key, tuple[list[int], list[int]]]  # starts, and the furthest end so far
 
 
-def _merge_alternate(
-    findings: list[Finding],
-    scanned: list[Field],
-    matches: dict[int, list[Match]],
-    alt_fields: dict[int, Field],
-    alt_matches: dict[int, list[Match]],
-    state_root: Path,
-) -> list[Finding]:
-    """Primary findings, plus each alternate-reading finding whose severity is higher than
-    everything the primary reading produced for the fields it touches. Both readings map
-    back to original code points, so their ranges are directly comparable."""
-    fields = [alt_fields.get(i, f) for i, f in enumerate(scanned)]
-    merged = {i: alt_matches.get(i, m) for i, m in matches.items()}
-    if not any(merged.values()):
-        return findings
-    best: dict[tuple[str, str], int] = {}
+def _cover(findings: list[Finding], min_rank: int) -> _Cover:
+    """The ranges of findings at or above a severity, indexed per field for range queries:
+    sorted starts, and beside each the furthest end among ranges up to it."""
+    spans: dict[_Key, list[tuple[int, int]]] = {}
     for f in findings:
-        for locator, _, _ in f.ranges:
-            key = (f.source_id, locator)
-            best[key] = max(best.get(key, 0), _RANK[f.severity])
-    seen = {f.finding_id for f in findings}
-    out = list(findings)
-    for f in judge(fields, merged, state_root):
-        top = max(best.get((f.source_id, loc), 0) for loc, _, _ in f.ranges)
-        if _RANK[f.severity] > top and f.finding_id not in seen:
-            out.append(f)
-            seen.add(f.finding_id)
+        if _RANK[f.severity] >= min_rank:
+            for locator, start, end in f.ranges:
+                spans.setdefault((f.source_id, locator), []).append((start, end))
+    cover: _Cover = {}
+    for key, ranges in spans.items():
+        ranges.sort()
+        reach: list[int] = []
+        for _, end in ranges:
+            reach.append(max(end, reach[-1]) if reach else end)
+        cover[key] = ([start for start, _ in ranges], reach)
+    return cover
+
+
+def _overlaps(cover: _Cover, f: Finding) -> bool:
+    """Whether any range of f overlaps a covered range in the same field."""
+    for locator, start, end in f.ranges:
+        starts, reach = cover.get((f.source_id, locator), ((), ()))
+        k = bisect_left(starts, end) - 1  # the last covered range starting before `end`
+        if k >= 0 and reach[k] > start:
+            return True
+    return False
+
+
+def _inside(cover: _Cover, f: Finding) -> bool:
+    """Whether every range of f lies inside a covered range in the same field."""
+    for locator, start, end in f.ranges:
+        starts, reach = cover.get((f.source_id, locator), ((), ()))
+        k = bisect_right(starts, start) - 1  # the last covered range starting at or before
+        if k < 0 or reach[k] < end:
+            return False
+    return True
+
+
+def _is_hidden(f: Finding) -> bool:
+    return f.features == ("hidden",)
+
+
+def _merge_alternate(primary: list[Finding], alternate: list[Finding]) -> list[Finding]:
+    """Primary findings, plus each alternate-reading finding that no primary finding of equal
+    or higher severity overlaps. Both readings report original code points, so their ranges
+    compare directly, field by field. Hidden runs are compared only with hidden runs: the
+    run that makes the readings differ always touches the words it was placed against, and
+    must not mask them. A primary finding of lower severity that lies inside an added
+    finding, and has only features a high finding is joined from, is dropped: the added
+    finding already reports it."""
+    at_least = {
+        (kind, rank): _cover([f for f in primary if _is_hidden(f) == kind], rank)
+        for kind in (False, True)
+        for rank in set(_RANK.values())
+    }
+    added = [f for f in alternate if not _overlaps(at_least[_is_hidden(f), _RANK[f.severity]], f)]
+    if not added:
+        return primary
+    above = {rank: _cover(added, rank + 1) for rank in set(_RANK.values())}
+    out = [
+        f
+        for f in primary
+        if not (_JOINABLE.issuperset(f.features) and _inside(above[_RANK[f.severity]], f))
+    ]
+    out.extend(added)
     out.sort(key=lambda f: (f.source_id, f.ranges))
     return out

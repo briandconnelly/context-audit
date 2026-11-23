@@ -27,8 +27,8 @@ SURFACES = frozenset(
     }
 )
 
-_ZERO_WIDTH = frozenset("​‌‍⁠﻿")
-_BIDI = frozenset("‎‏؜‪‫‬‭‮⁦⁧⁨⁩")
+_ZERO_WIDTH = frozenset("\u200b\u200c\u200d\u2060\ufeff")
+_BIDI = frozenset("\u200e\u200f\u061c\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
 _COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
 _ENCODED = re.compile(r"[A-Za-z0-9+/]{80,}={0,2}")
 _FENCE = re.compile(r"^[ \t]*```.*?(?:^[ \t]*```[^\n]*|\Z)", re.DOTALL | re.MULTILINE)
@@ -48,6 +48,11 @@ _LIST_ITEM = re.compile(r"(?:[-*+]|\d+[.)])(?: |$)")
 _BLOCK_START = re.compile(r"(?:[-*+](?: |$)|\d+[.)](?: |$)|#|>|\||```)")
 _BACKTICKS = re.compile(r"`+")
 _HAS_SPACE = re.compile(r"\s")
+_SEPARATORS = frozenset("\u2028\u2029")  # line and paragraph separators
+_JOINERS = frozenset("\u200c\u200d")  # zero-width non-joiner and joiner
+# Categories a joiner ordinarily sits between: letters of scripts that shape with joiners,
+# their marks (a variation selector is one), and emoji with their modifiers.
+_JOINED_CATEGORIES = frozenset({"Lo", "Mn", "Mc", "So", "Sk"})
 
 
 @dataclass(frozen=True)
@@ -94,6 +99,42 @@ def _removed_kind(c: str) -> str | None:
 def _is_control(c: str) -> bool:
     o = ord(c)
     return (o < 0x20 and c not in _KEEP_CONTROLS) or 0x7F <= o <= 0x9F
+
+
+def _is_selector(c: str) -> bool:
+    o = ord(c)
+    return 0xFE00 <= o <= 0xFE0F or 0xE0100 <= o <= 0xE01EF
+
+
+def _ordinary(src: str, i: int) -> bool:
+    """Whether the removed character at i is ordinary emoji or non-Latin typography, which is
+    removed without being reported: a variation selector right after a visible non-ASCII
+    base character, or a joiner between two non-ASCII letters, marks or symbols."""
+    c = src[i]
+    if i == 0:
+        return False
+    prev = src[i - 1]
+    if prev < "\x80":
+        return False
+    if _is_selector(c):
+        return not (prev.isspace() or _is_control(prev) or _removed_kind(prev))
+    if c not in _JOINERS or i + 1 >= len(src) or src[i + 1] < "\x80":
+        return False
+    return (
+        unicodedata.category(prev) in _JOINED_CATEGORIES
+        and unicodedata.category(src[i + 1]) in _JOINED_CATEGORIES
+    )
+
+
+def _merge_runs(hidden: list[tuple[int, int, str]]) -> list[tuple[int, int, str]]:
+    """Sorted runs with touching runs of one kind merged."""
+    merged: list[tuple[int, int, str]] = []
+    for start, end, kind in sorted(hidden):
+        if merged and merged[-1][1] == start and merged[-1][2] == kind:
+            merged[-1] = (merged[-1][0], end, kind)
+        else:
+            merged.append((start, end, kind))
+    return merged
 
 
 class _Terminators:
@@ -176,8 +217,17 @@ def normalize(field: Field) -> Normalized:
 
     i, size = 0, len(src)
     gap = -1  # original index of a removed control or invisible run awaiting spacing
+    # Separators seen after a letter or digit: hidden if the next kept character is one too
+    # (they sit inside a word), else a line break. Where a capitalised word follows, the
+    # alternate reading takes it for the start of a line.
+    held: list[int] = []
+    joined = False
     while i < size:
         c = src[i]
+        if c > "~" and c in _SEPARATORS and out and out[-1].isalnum():
+            held.append(i)
+            i += 1
+            continue
         if _is_control(c):
             j = _alternate_end(src, i) if alternate else _primary_end(src, i, terms)
             note(i, j, "control")
@@ -187,15 +237,26 @@ def normalize(field: Field) -> Normalized:
             continue
         kind = _removed_kind(c)
         if kind is not None:
-            note(i, i + 1, kind)
-            if kind == "invisible" and gap < 0:
-                gap = i
+            if not _ordinary(src, i):
+                note(i, i + 1, kind)
+                if kind == "invisible" and gap < 0:
+                    gap = i
             i += 1
             continue
         j = i + 1
         while j < size and unicodedata.combining(src[j]) and _removed_kind(src[j]) is None:
             j += 1
         for ch in unicodedata.normalize("NFKC", src[i:j]):
+            if held:
+                if ch.isalnum() and not (alternate and ch.isupper() and not out[-1].isupper()):
+                    for at in held:
+                        note(at, at + 1, "invisible")
+                    gap = held[0] if gap < 0 else min(gap, held[0])
+                    joined = True
+                else:
+                    out.append(" ")
+                    origin.append(held[0])
+                held.clear()
             if gap >= 0:
                 # Letters or digits on both sides join; otherwise keep one space between
                 # two non-space characters, so removal never glues two words.
@@ -211,10 +272,28 @@ def normalize(field: Field) -> Normalized:
             out.append(ch)
             origin.append(i)
         i = j
+    if held:  # separators at the end of the text are line breaks
+        out.append(" ")
+        origin.append(held[0])
+    if joined:  # runs noted late are out of order
+        hidden = _merge_runs(hidden)
     hidden.extend((m.start(), m.end(), "comment") for m in _COMMENT.finditer(src))
     hidden.extend((m.start(), m.end(), "encoded") for m in _ENCODED.finditer(src))
     hidden.sort()
     return Normalized("".join(out), tuple(origin), tuple(hidden), src)
+
+
+def has_second_reading(n: Normalized) -> bool:
+    """Whether the alternate reading of this field can differ from the primary one: it holds
+    an escape introducer or other control, or a separator that was joined inside a word."""
+    src = n.source
+    separators = "\u2028" in src or "\u2029" in src
+    for start, end, kind in n.hidden:
+        if kind == "control":
+            return True
+        if separators and kind == "invisible" and not _SEPARATORS.isdisjoint(src[start:end]):
+            return True
+    return False
 
 
 def original_range(n: Normalized, start: int, end: int) -> tuple[int, int]:
