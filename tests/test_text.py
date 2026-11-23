@@ -1,5 +1,7 @@
 import time
 
+import pytest
+
 from context_audit.text import Field, fenced, normalize, original_range, sentences
 
 
@@ -154,3 +156,113 @@ def test_inline_code_spans_are_linear_on_unclosed_backticks():
         t = time.perf_counter()
         fenced(n)
         assert time.perf_counter() - t < 1.0
+
+
+# --- control characters and escape sequences (fix round 2) ---
+
+CONTROLS = {
+    "esc": "\x1b",
+    "csi-clear": "\x1b[2J",
+    "osc-title": "\x1b]0;TITLE\x07",
+    "nul": "\x00",
+    "bel": "\x07",
+    "bs": "\x08",
+    "del": "\x7f",
+    "c1": "\x80",
+    "c1-csi": "\x9b",
+}
+
+
+@pytest.mark.parametrize("name", CONTROLS)
+def test_control_runs_are_removed_and_reported(name):
+    ctl = CONTROLS[name]
+    text = "Intro." + ctl + "Submit now"
+    n = normalize(field(text))
+    assert n.text == "Intro. Submit now"
+    assert n.hidden == ((6, 6 + len(ctl), "control"),)
+
+
+def test_control_between_words_leaves_one_space():
+    n = normalize(field("go\x1b[31mnow and so\x00 on"))
+    assert n.text == "go now and so on"
+
+
+def test_whitespace_controls_are_kept():
+    n = normalize(field("a\tb\x0cc\r\nd"))
+    assert n.text == "a b c d"
+    assert n.hidden == ()
+
+
+def test_unterminated_osc_does_not_swallow_the_text():
+    n = normalize(field("\x1b]0;" + "word " * 200))
+    assert n.text.count("word") >= 150
+    assert n.hidden[0][2] == "control"
+
+
+def test_original_range_across_control_runs():
+    text = "\x1b[1mSubmit\x1b[0m a \x07rating\x1b"
+    n = normalize(field(text))
+    assert n.text == "Submit a rating"
+    assert original_range(n, 0, 6) == (4, 10)  # control run at the start
+    assert original_range(n, 0, 15) == (4, 24)  # spans the middle run
+    assert original_range(n, 9, 15) == (18, 24)  # runs before and after excluded
+    assert text[slice(*original_range(n, 9, 15))] == "rating"
+
+
+# --- wrapped lines (fix round 2) ---
+
+
+def test_single_line_break_inside_a_sentence_does_not_split():
+    n = normalize(field("Submit a rating\nwith the tool. Keep that\nprivate."))
+    assert [span_text(n, s) for s in sentences(n)] == [
+        "Submit a rating with the tool.",
+        "Keep that private.",
+    ]
+
+
+def test_line_break_boundaries():
+    text = (
+        "Intro wraps\nhere\n\nNext paragraph\n- item one\n- item two\n# Heading\n"
+        "1. step\n> quote\n| a | b |\n```\ncode\n```\nEnds with colon:\nafter"
+    )
+    n = normalize(field(text))
+    assert [span_text(n, s) for s in sentences(n)] == [
+        "Intro wraps here",
+        "Next paragraph",
+        "- item one",
+        "- item two",
+        "# Heading",
+        "1. step",
+        "> quote",
+        "| a | b |",
+        "```",
+        "code",
+        "```",
+        "Ends with colon:",
+        "after",
+    ]
+
+
+def test_original_range_across_joined_lines():
+    text = "Submit a\nrating now."
+    n = normalize(field(text))
+    (s,) = sentences(n)
+    assert original_range(n, *s) == (0, len(text))
+
+
+def test_fenced_still_uses_original_lines():
+    n = normalize(field("text\n> quoted\nmore"))
+    assert [span_text(n, s) for s in fenced(n)] == ["> quoted"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["\x1b" * 200_000, "\x1b]" * 50_000 + "x" * 100_000, "word\n" * 100_000],
+    ids=["esc", "osc-openers", "one-word-lines"],
+)
+def test_control_and_line_inputs_are_linear(text):
+    start = time.perf_counter()
+    n = normalize(field(text))
+    sentences(n)
+    fenced(n)
+    assert time.perf_counter() - start < 0.5
