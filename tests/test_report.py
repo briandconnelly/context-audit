@@ -86,3 +86,11 @@ def test_one_sentence_per_line(tmp_path):
 def test_says_results_are_exploratory(tmp_path):
     text, _ = write(tmp_path)
     assert "exploratory" in text.split("\n## ")[0]
+
+
+def test_report_lists_what_was_not_probed(tmp_path):
+    text, _ = write(tmp_path)
+    section = text.split("## Not probed")[1].lower()
+    assert "two gated tools" in section
+    assert "parallel gated calls" in section
+    assert "proceeds as written" not in text

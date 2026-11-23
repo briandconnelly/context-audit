@@ -51,3 +51,38 @@ def test_not_shown_when_nothing_was_replaced():
 
 def test_inconclusive_when_no_result_reached_the_model():
     assert check_replacement(evidence("nothing at all"))[0] == "inconclusive"
+
+
+def test_not_shown_when_original_is_in_an_unscripted_request():
+    ev = evidence(f"{markers.REPLACEMENT} {markers.SIBLING}")
+    body = {"messages": [{"role": "user", "content": markers.TEXT_RESULT}]}
+    ev.requests.append(
+        {
+            "n": 9,
+            "path": "/v1/messages/count_tokens",
+            "auth": "synthetic",
+            "scripted": False,
+            "body": body,
+        }
+    )
+    assert check_replacement(ev)[0] == "not_shown"
+
+
+def test_transcript_check_reports_what_the_transcript_holds(tmp_path):
+    from dataclasses import replace
+
+    from probe.scenarios.replacement import check_transcript_after_replacement
+
+    path = tmp_path / "t.jsonl"
+    base = evidence(f"{markers.REPLACEMENT} {markers.SIBLING}")
+    path.write_text(f"toolu_probe01 {markers.REPLACEMENT}")
+    outcome, reason = check_transcript_after_replacement(replace(base, transcript=path))
+    assert outcome == "not_shown"
+    assert "replacement" in reason
+    path.write_text(f"toolu_probe01 {markers.TEXT_RESULT}")
+    assert check_transcript_after_replacement(replace(base, transcript=path))[0] == "shown"
+    assert check_transcript_after_replacement(base)[0] == "inconclusive"
+    unreplaced = evidence(f"{markers.TEXT_RESULT} {markers.SIBLING}")
+    assert check_transcript_after_replacement(replace(unreplaced, transcript=path))[0] == (
+        "inconclusive"
+    )

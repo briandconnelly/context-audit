@@ -25,7 +25,9 @@ def _text(*parts: str) -> dict[str, Any]:
 
 def _structured() -> dict[str, Any]:
     data = {"value": markers.STRUCTURED_RESULT, "other": markers.SIBLING}
-    return {"content": [{"type": "text", "text": json.dumps(data)}], "structuredContent": data}
+    # The text block carries a different marker, so a probe can tell which member was delivered.
+    text = json.dumps({"value": markers.STRUCTURED_TEXT})
+    return {"content": [{"type": "text", "text": text}], "structuredContent": data}
 
 
 def _big() -> dict[str, Any]:

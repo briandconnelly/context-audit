@@ -13,6 +13,18 @@
    "reason": "2 requests, every model request with the synthetic key; managed settings file absent"
   },
   {
+   "name": "isolation-canary",
+   "claim": "The probe detects an instruction file loaded from above the working directory",
+   "outcome": "shown",
+   "reason": "planted file reached the model: True; guard fired: True"
+  },
+  {
+   "name": "isolation-exclusion",
+   "claim": "With no setting sources, an instruction file above the working directory stays out",
+   "outcome": "shown",
+   "reason": "planted file reached the model: False; guard fired: False"
+  },
+  {
    "name": "result-text",
    "claim": "The result hook receives the complete text of each result shape",
    "outcome": "shown",
@@ -22,7 +34,7 @@
    "name": "result-structured",
    "claim": "The result hook receives the complete text of each result shape",
    "outcome": "shown",
-   "reason": "PostToolUse input held all 1 markers"
+   "reason": "of ['structuredContent', 'content text']: the model received ['structuredContent']; the hook received ['structuredContent']"
   },
   {
    "name": "result-split",
@@ -34,7 +46,7 @@
    "name": "result-big",
    "claim": "The result hook receives the complete text of each result shape",
    "outcome": "shown",
-   "reason": "hook input held both ends of a 200,000 character result; next model request has head=True tail=False"
+   "reason": "hook input held one text of 200,000 characters; next model request has head=True tail=False"
   },
   {
    "name": "error-tool",
@@ -77,6 +89,12 @@
    "claim": "The result hook receives the complete text of each result shape",
    "outcome": "shown",
    "reason": "the hook ran in the resumed session; session ids seen: 1"
+  },
+  {
+   "name": "replace-transcript",
+   "claim": "After a replacement, the transcript still holds the original result",
+   "outcome": "not_shown",
+   "reason": "transcript holds the original: False; holds the replacement: True"
   },
   {
    "name": "replace-text",
@@ -124,13 +142,13 @@
    "name": "ask-retry",
    "claim": "A gate's ask reaches the owner before the call runs",
    "outcome": "shown",
-   "reason": "prompts answered: 2; calls that ran: 1; hook reason shown in the prompt: True"
+   "reason": "prompts answered: 2; calls that ran: 0; hook reason shown in the prompt: True"
   },
   {
    "name": "ask-dont-ask-again",
    "claim": "A gate's ask reaches the owner before the call runs",
    "outcome": "shown",
-   "reason": "the hook's ask prompted again after 'don't ask again'; second prompt appeared: True; calls that ran: 2"
+   "reason": "the hook's ask prompted again and the declined call did not run; calls that ran: 1; second prompt seen: (True,)"
   }
  ]
 }

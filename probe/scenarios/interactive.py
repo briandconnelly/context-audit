@@ -16,6 +16,7 @@ FINISHED = "probe-finished"
 PROMPT = "Do you want to proceed?"
 HOOK_REASON = "Probe gate: confirm this call"
 INTERRUPTED = "What should Claude do instead?"
+DONT_ASK = "don't ask again"
 START = Step("❯", "run the probe\r")
 ASK = HookSpec("PreToolUse", "mcp__.*", "ask", "g")
 RECORD_PRE = HookSpec("PreToolUse", "mcp__.*", "record", "a")
@@ -74,14 +75,21 @@ def ask_check(expected_calls: int, prompt_steps: tuple[int, ...] = (1,)) -> Chec
 
 
 def check_dont_ask_again(ev: Evidence) -> tuple[Outcome, str]:
-    """After the owner picks "don't ask again", does the hook's ask still prompt?"""
+    """After the owner picks "don't ask again", does the hook's ask still prompt?
+
+    The second prompt is declined, so a re-prompting hook leaves one call and a silenced hook
+    leaves two. The call count decides; a repainted first prompt cannot fake it.
+    """
+    detail = f"calls that ran: {len(ev.calls)}; second prompt seen: {ev.steps_seen[2:3]}"
     if len(ev.steps_seen) < 3 or not ev.steps_seen[1]:
-        return "inconclusive", "the first prompt never appeared"
-    second = ev.steps_seen[2]
-    detail = f"second prompt appeared: {second}; calls that ran: {len(ev.calls)}"
-    if second:
-        return "shown", f"the hook's ask prompted again after 'don't ask again'; {detail}"
-    return "not_shown", f"'don't ask again' silenced the hook's later ask; {detail}"
+        return "inconclusive", f"the first prompt never appeared; {detail}"
+    if not _on_screen(ev, DONT_ASK):
+        return "inconclusive", f'the prompt did not offer "don\'t ask again"; {detail}'
+    if len(ev.calls) >= 2:
+        return "not_shown", f'the second call ran: "don\'t ask again" silenced the hook; {detail}'
+    if len(ev.calls) == 1 and ev.steps_seen[2]:
+        return "shown", f"the hook's ask prompted again and the declined call did not run; {detail}"
+    return "inconclusive", detail
 
 
 def _ask(name: str, times: int, check: Check) -> Scenario:
@@ -115,7 +123,7 @@ INTERACTIVE: list[Scenario] = [
     _ask("ask-accept", 1, ask_check(expected_calls=1)),
     _ask("ask-decline", 1, ask_check(expected_calls=0)),
     _ask("ask-dismiss", 1, ask_check(expected_calls=0)),
-    _ask("ask-retry", 2, ask_check(expected_calls=1, prompt_steps=(1, 3))),
+    _ask("ask-retry", 2, ask_check(expected_calls=0, prompt_steps=(1, 3))),
     _ask("ask-dont-ask-again", 2, check_dont_ask_again),
 ]
 
@@ -128,11 +136,12 @@ DRIVE: dict[str, tuple[list[Step], str | None]] = {
     "ask-decline": ([START, Step(PROMPT, "3")], INTERRUPTED),
     "ask-dismiss": ([START, Step(PROMPT, "\x1b")], INTERRUPTED),
     "ask-retry": (
-        [START, Step(PROMPT, "3"), Step(INTERRUPTED, "again\r"), Step(PROMPT, "1")],
-        None,
+        # Declined both times: a retry that ran without a second prompt would leave a call.
+        [START, Step(PROMPT, "3"), Step(INTERRUPTED, "again\r"), Step(PROMPT, "3")],
+        INTERRUPTED,
     ),
     "ask-dont-ask-again": (
-        [START, Step(PROMPT, "2"), Step(PROMPT, "1", timeout=15, optional=True)],
-        None,
+        [START, Step(PROMPT, "2"), Step(PROMPT, "3", timeout=15, optional=True)],
+        INTERRUPTED,
     ),
 }

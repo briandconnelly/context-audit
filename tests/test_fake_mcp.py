@@ -110,7 +110,9 @@ def test_structured_result(server):
         "value": markers.STRUCTURED_RESULT,
         "other": markers.SIBLING,
     }
-    assert json.loads(result["content"][0]["text"]) == result["structuredContent"]
+    assert markers.STRUCTURED_TEXT in result["content"][0]["text"]
+    assert markers.STRUCTURED_RESULT not in result["content"][0]["text"]
+    assert markers.STRUCTURED_TEXT not in json.dumps(result["structuredContent"])
 
 
 def test_big_result_is_whole(server):

@@ -103,3 +103,12 @@ def test_malformed_body_is_recorded_not_fatal(tmp_path):
         ok = post_json(stub.url + "/v1/messages", TOOLS)
     assert ok["content"][0]["text"] == "done"
     assert stub.requests()[0]["body"] == {"_unparsed": True}
+
+
+def test_requests_ignores_a_partly_written_last_line(tmp_path):
+    cap = tmp_path / "cap.jsonl"
+    with Stub([], cap) as stub:
+        post(stub.url + "/v1/messages", TOOLS)
+        with cap.open("a") as fh:
+            fh.write('{"n": 1, "path": "/v1/mess')
+        assert [r["n"] for r in stub.requests()] == [0]

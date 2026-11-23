@@ -87,7 +87,12 @@ def test_until_can_be_a_predicate(tmp_path):
         "time.sleep(60)\n"
     )
     screen, missing, _, _ = drive(
-        [sys.executable, "-c", prog], [], cwd=tmp_path, env={}, until=flag.exists, timeout=20
+        [sys.executable, "-c", prog],
+        [],
+        cwd=tmp_path,
+        env={},
+        until=lambda screen: flag.exists(),
+        timeout=20,
     )
     assert missing is None
     assert flag.exists()
@@ -96,6 +101,36 @@ def test_until_can_be_a_predicate(tmp_path):
 def test_a_predicate_that_never_holds_is_reported(tmp_path):
     prog = "import time\ntime.sleep(60)\n"
     _, missing, _, _ = drive(
-        [sys.executable, "-c", prog], [], cwd=tmp_path, env={}, until=lambda: False, timeout=2
+        [sys.executable, "-c", prog],
+        [],
+        cwd=tmp_path,
+        env={},
+        until=lambda screen: False,
+        timeout=2,
     )
     assert missing == "the end condition"
+
+
+def test_the_program_is_stopped_when_the_end_condition_raises(tmp_path):
+    import os
+
+    import pytest
+
+    pidfile = tmp_path / "pid"
+    prog = (
+        "import os, pathlib, time\n"
+        f"pathlib.Path({str(pidfile)!r}).write_text(str(os.getpid()))\n"
+        "print('up', flush=True)\n"
+        "time.sleep(60)\n"
+    )
+
+    def boom(screen):
+        if pidfile.exists():
+            raise ValueError("bad evidence")
+        return False
+
+    with pytest.raises(ValueError):
+        drive([sys.executable, "-c", prog], [], cwd=tmp_path, env={}, until=boom, timeout=20)
+    pid = int(pidfile.read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)

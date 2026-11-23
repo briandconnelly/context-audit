@@ -138,3 +138,48 @@ def test_claude_runs_outside_the_home_tree(tmp_path, monkeypatch):
     for ancestor in [cwd, *cwd.parents]:
         assert not (ancestor / "CLAUDE.md").exists()
         assert not (ancestor / ".claude").exists()
+
+
+def _evidence(request):
+    from probe.sandbox import Completed
+    from probe.scenario import Evidence
+
+    return Evidence(Path("."), Completed(0, "", "", False), [request], [], [], None)
+
+
+def test_a_real_credential_in_any_scenario_is_inconclusive():
+    for kind in ("bearer", "other-key"):
+        request = {"n": 0, "path": "/v1/messages", "auth": kind, "scripted": True, "body": {}}
+        outcome, reason = runner.judge(scenario(), _evidence(request))
+        assert outcome == "inconclusive"
+        assert kind in reason
+
+
+def test_a_loaded_instruction_file_in_any_scenario_is_inconclusive():
+    body = {"messages": [{"role": "user", "content": "Contents of /somewhere/CLAUDE.md (x):"}]}
+    request = {"n": 0, "path": "/v1/messages", "auth": "synthetic", "scripted": True, "body": body}
+    outcome, reason = runner.judge(scenario(), _evidence(request))
+    assert outcome == "inconclusive"
+    assert "instruction file" in reason
+
+
+def test_planted_files_are_written_two_levels_above_the_working_directory(tmp_path, monkeypatch):
+    body = (
+        "import os, pathlib, sys\n"
+        "log = pathlib.Path(sys.argv[sys.argv.index('--debug-file') + 1])\n"
+        "log.with_name('cwd.txt').write_text(os.getcwd())"
+    )
+    monkeypatch.setattr(runner, "CLAUDE_ARGV0", fake_claude(tmp_path, body))
+    s = Scenario("t", "c", [Reply(text="x")], [], planted={"CLAUDE.md": "canary"})
+    result = run_scenario(s, tmp_path / "run", timeout=10)
+    cwd = Path((result.run_dir / "cwd.txt").read_text())
+    assert (cwd.parent.parent / "CLAUDE.md").read_text() == "canary"
+    assert not (cwd.parent / "CLAUDE.md").exists()
+    assert not (cwd / "CLAUDE.md").exists()
+
+
+def test_outside_settings_are_excluded_unless_a_scenario_asks(tmp_path):
+    default = runner.prepare(scenario(), tmp_path, "http://127.0.0.1:1")
+    assert default.argv[default.argv.index("--setting-sources") + 1] == ""
+    loading = Scenario("t", "c", [], [], load_outside_settings=True)
+    assert "--setting-sources" not in runner.prepare(loading, tmp_path, "http://127.0.0.1:1").argv

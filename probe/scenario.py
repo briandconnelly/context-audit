@@ -50,6 +50,11 @@ class Scenario:
     check: Check = _no_check
     followups: tuple[Scenario, ...] = field(default=())
     interactive: bool = False
+    # Files written to an ancestor of the working directory before the run: name -> content.
+    planted: dict[str, str] = field(default_factory=dict)
+    # Let the CLI read user, project, and local settings and instruction files, as it does by
+    # default. Only the isolation canary wants this.
+    load_outside_settings: bool = False
 
 
 @dataclass(frozen=True)

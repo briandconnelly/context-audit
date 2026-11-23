@@ -28,9 +28,30 @@ IF_NOT_SHOWN = {
         "whether the evidence store is on by default."
     ),
     replacement.CLAIM: "Redaction is not offered.",
+    replacement.TRANSCRIPT_CLAIM: (
+        "After a replacement the transcript holds the replacement, so the investigate command "
+        "cannot show the original, and the design's Redaction section needs correcting."
+    ),
+    delivery.EXCLUSION_CLAIM: (
+        "The probe's flags do not keep outside instruction files out, so it relies on the "
+        "working directory alone."
+    ),
+    delivery.ISOLATION_CLAIM: (
+        "The isolation guard cannot be trusted, so no run is known to be free of outside "
+        "instructions."
+    ),
     interactive.DIRECT_CLAIM: "Delivery is deferred on that path.",
     interactive.ASK_CLAIM: "Follow-on gating is not offered.",
 }
+NOT_PROBED = (
+    "Two gated tools at once, and parallel gated calls.",
+    "Auto mode, which is the interactive default, and headless delivery of messages and prompts.",
+    "First-run behaviour: the interactive profile is seeded as already set up.",
+    "Replacement of structured, split, or oversized results.",
+    "A long error string, where the hooks reference documents middle truncation.",
+    "Any hook event that did not fire in these runs.",
+    "A leaked skill list: the isolation guard detects instruction files only.",
+)
 IF_SHOWN_METADATA = "A hook event carries metadata, so the design uses it and narrows live listing."
 
 
@@ -55,7 +76,7 @@ def _consequence(claim: str, group: list[Result]) -> str:
     if claim == delivery.METADATA_CLAIM:
         return IF_SHOWN_METADATA if "shown" in outcomes else IF_NOT_SHOWN[claim]
     if outcomes == {"shown"}:
-        return "Holds on this build for every scenario run, so the design proceeds as written."
+        return "Shown on this build for every scenario run."
     failing = ", ".join(f"`{r.name}` ({r.outcome})" for r in group if r.outcome != "shown")
     rule = IF_NOT_SHOWN.get(claim, "The design has no stated consequence for this claim.")
     return f"Not shown for {failing}: {rule}"
@@ -109,5 +130,7 @@ def write_report(
     lines += ["", "## Consequences for the design", ""]
     for claim, group in grouped.items():
         lines.append(f"- **{claim}.** {_consequence(claim, group)}")
+    lines += ["", "## Not probed", ""]
+    lines += [f"- {item}" for item in NOT_PROBED]
     text = "\n".join(lines)
     out_md.write_text(re.sub(r"\n{3,}", "\n\n", text).rstrip("\n") + "\n", encoding="utf-8")

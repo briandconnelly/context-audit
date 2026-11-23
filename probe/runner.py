@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from probe import checks
 from probe.sandbox import Completed, Sandbox
 from probe.scenario import Evidence, Outcome, Result, Scenario
 from probe.stub import Stub
@@ -72,6 +73,9 @@ def prepare(
         argv += ["--permission-mode", "default"]
     if resume:
         argv += ["--resume", resume]
+    if not s.load_outside_settings:
+        # No user, project, or local settings or instruction files: only the --settings file.
+        argv += ["--setting-sources", ""]
     argv += ["--settings", str(settings), "--mcp-config", str(mcp), "--strict-mcp-config"]
     argv += ["--debug-file", str(run_dir / "debug.log")]
     if s.allowed_tools:
@@ -99,6 +103,11 @@ def judge(s: Scenario, ev: Evidence) -> tuple[Outcome, str]:
         return "inconclusive", "claude timed out"
     if not ev.requests:
         return "inconclusive", f"no request reached the stub (exit {ev.completed.exit})"
+    real = checks.real_credentials(ev)
+    if real:
+        return "inconclusive", f"requests carried credentials of kind {real}"
+    if not s.planted and checks.instruction_file_loaded(ev):
+        return "inconclusive", "an instruction file from outside the run was loaded"
     try:
         return s.check(ev)
     except Exception as exc:  # noqa: BLE001 - a broken check must not look like a finding
@@ -119,18 +128,24 @@ def session_id(ev: Evidence) -> str | None:
     return None
 
 
-def isolated_workdir() -> Path:
+def isolated_workdir(planted: dict[str, str] | None = None) -> Path:
     """A fresh working directory with no CLAUDE.md or .claude in any ancestor.
+
+    ``planted`` files are written two levels above it, to test ancestor loading on purpose.
 
     Claude Code reads instructions and skills from every ancestor of its working directory, so a
     directory under the owner's home would put their real configuration into the run.
     """
-    work = Path(tempfile.mkdtemp(prefix="ctxa-probe-")).resolve()
+    root = Path(tempfile.mkdtemp(prefix="ctxa-probe-")).resolve()
+    work = root / "nested" / "cwd"
+    work.mkdir(parents=True)
     for ancestor in [work, *work.parents]:
         if (ancestor / "CLAUDE.md").exists() or (ancestor / ".claude").exists():
             raise RuntimeError(f"working directory is not isolated: {ancestor} has Claude files")
     if work.is_relative_to(Path.home().resolve()):
         raise RuntimeError(f"working directory is under the home directory: {work}")
+    for name, content in (planted or {}).items():
+        (root / name).write_text(content, encoding="utf-8")
     return work
 
 
@@ -138,7 +153,7 @@ def run_scenario(s: Scenario, run_dir: Path, *, timeout: float = 120) -> Result:
     run_dir = run_dir.resolve()
     fresh_dir(run_dir)
     sandbox = Sandbox(run_dir / "profile")
-    work = isolated_workdir()
+    work = isolated_workdir(s.planted)
     (run_dir / "workdir.txt").write_text(str(work), encoding="utf-8")
     script = [*s.script]
     for follow in s.followups:

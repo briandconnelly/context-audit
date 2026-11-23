@@ -66,7 +66,7 @@ def drive(
     *,
     cwd: Path,
     env: dict[str, str],
-    until: str | Callable[[], bool] | None = None,
+    until: str | Callable[[str], bool] | None = None,
     timeout: float = 180,
     settle: float = 1.0,
 ) -> tuple[str, str | None, int | None, list[bool]]:
@@ -127,31 +127,35 @@ def drive(
             pump(0.2)
         return want in fresh()
 
-    missing: str | None = None
-    seen: list[bool] = []
-    for step in steps:
-        found = step.wait_for is None or wait_for(step.wait_for, step.timeout)
-        seen.append(found)
-        if not found:
-            if step.optional:
-                continue
-            missing = step.wait_for
-            break
+    exit_code: int | None = None
+    try:
+        missing: str | None = None
+        seen: list[bool] = []
+        for step in steps:
+            found = step.wait_for is None or wait_for(step.wait_for, step.timeout)
+            seen.append(found)
+            if not found:
+                if step.optional:
+                    continue
+                missing = step.wait_for
+                break
+            pump(settle)
+            mark = len(_squash(screen()))
+            with contextlib.suppress(OSError):
+                os.write(master, step.send.encode())
+        if missing is None and isinstance(until, str) and not wait_for(until, timeout):
+            missing = until
+        if missing is None and callable(until):
+            while not until(fresh()) and time.monotonic() < deadline and proc.poll() is None:
+                pump(0.2)
+            if not until(fresh()):
+                missing = "the end condition"
         pump(settle)
-        mark = len(_squash(screen()))
-        with contextlib.suppress(OSError):
-            os.write(master, step.send.encode())
-    if missing is None and isinstance(until, str) and not wait_for(until, timeout):
-        missing = until
-    if missing is None and callable(until):
-        while not until() and time.monotonic() < deadline and proc.poll() is None:
-            pump(0.2)
-        if not until():
-            missing = "the end condition"
-    pump(settle)
-    exit_code = _finish(proc)
-    pump(0.3)
-    os.close(master)
+    finally:
+        # Never leave the program running, even when a check raises.
+        exit_code = _finish(proc)
+        pump(0.3)
+        os.close(master)
     return screen(), missing, exit_code, seen
 
 
@@ -186,7 +190,7 @@ def run_interactive(
     until: str | None = None,
     timeout: float = 180,
 ) -> Result:
-    """Drive ``s`` on a terminal. With no ``until`` text, it ends when the script is used up."""
+    """Drive ``s`` on a terminal until the script is used up or the ``until`` text appears."""
     run_dir = run_dir.resolve()
     fresh_dir(run_dir)
     sandbox = Sandbox(run_dir / "profile")
@@ -200,7 +204,10 @@ def run_interactive(
             steps,
             cwd=work,
             env={**sandbox.env, **prepared.extra_env},
-            until=until or (lambda: _script_used_up(stub, len(s.script))),
+            until=lambda fresh: (
+                _script_used_up(stub, len(s.script))
+                or (until is not None and _squash(until) in fresh)
+            ),
             timeout=timeout,
             settle=1.5,
         )

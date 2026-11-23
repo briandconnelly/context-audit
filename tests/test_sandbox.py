@@ -60,5 +60,5 @@ def test_stdin_is_passed(tmp_path):
 
 def test_markers_are_unique():
     values = [v for k, v in vars(markers).items() if k.isupper()]
-    assert len(values) == len(set(values)) == 14
+    assert len(values) == len(set(values)) == 16
     assert all(v.startswith("CTXA-") for v in values)

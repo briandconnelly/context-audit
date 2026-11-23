@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from probe.scenario import Evidence
@@ -55,6 +56,20 @@ def any_hook_event_has(ev: Evidence, marker: str) -> list[str]:
         if marker in dump(record.get("input", {})):
             names.add(str(record["input"].get("hook_event_name")))
     return sorted(names)
+
+
+INSTRUCTION_FILE = re.compile(r"Contents of [^\"\\\n]*CLAUDE\.md")
+
+
+def instruction_file_loaded(ev: Evidence) -> bool:
+    """True when a request quotes a CLAUDE.md file, or the harness reported loading one."""
+    if any(INSTRUCTION_FILE.search(dump(r["body"])) for r in ev.requests):
+        return True
+    return bool(hook_records(ev, "InstructionsLoaded"))
+
+
+def real_credentials(ev: Evidence) -> list[str]:
+    return sorted({r["auth"] for r in ev.requests if r["auth"] in ("bearer", "other-key")})
 
 
 def transcript_has(ev: Evidence, tool_use_id: str, marker: str) -> bool:

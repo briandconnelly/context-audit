@@ -112,8 +112,15 @@ class Stub:
         self._server.server_close()
 
     def requests(self) -> list[dict[str, Any]]:
-        lines = self._capture.read_text(encoding="utf-8").splitlines()
-        return [json.loads(line) for line in lines if line]
+        with self._lock:
+            lines = self._capture.read_text(encoding="utf-8").splitlines()
+        records = []
+        for line in lines:
+            try:
+                records.append(json.loads(line))
+            except ValueError:
+                continue  # a line that is not whole
+        return records
 
     def _answer(self, path: str, body: dict[str, Any], auth: str) -> tuple[int, dict[str, Any]]:
         """Record the request and pick the reply, atomically."""

@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 from probe import checks, markers
+from probe.fake_mcp import BIG_SIZE
 from probe.scenario import Check, Evidence, HookSpec, Outcome, Scenario
 from probe.stub import Reply, ToolCall
 
 RESULT_CLAIM = "The result hook receives the complete text of each result shape"
 ERROR_CLAIM = "The failure hook receives error content"
 METADATA_CLAIM = "Any inspected hook event carries tool descriptions or server instructions"
+ISOLATION_CLAIM = "The probe detects an instruction file loaded from above the working directory"
+EXCLUSION_CLAIM = (
+    "With no setting sources, an instruction file above the working directory stays out"
+)
 TRANSCRIPT_CLAIM = "The transcript holds tool results that can be read back by tool-use ID"
 RECORD = [
     HookSpec("PreToolUse", "mcp__.*", "record", "a"),
@@ -83,22 +88,74 @@ def delivered(*needed: str, event: str = "PostToolUse", label: str | None = None
     return check
 
 
+def _longest_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return max((_longest_text(v) for v in value), key=len, default="")
+    if isinstance(value, dict):
+        return max((_longest_text(v) for v in value.values()), key=len, default="")
+    return ""
+
+
 def check_big(ev: Evidence) -> tuple[Outcome, str]:
-    head = checks.hook_saw(ev, "PostToolUse", markers.BIG_HEAD)
-    tail = checks.hook_saw(ev, "PostToolUse", markers.BIG_TAIL)
+    """Shown only when the hook holds one text of the full length, not just its two ends."""
+    records = checks.hook_records(ev, "PostToolUse")
     model = [
         checks.next_request_has(ev, markers.BIG_HEAD),
         checks.next_request_has(ev, markers.BIG_TAIL),
     ]
     note = f"next model request has head={model[0]} tail={model[1]}"
-    if not checks.hook_records(ev, "PostToolUse"):
+    if not records:
         return (
             "inconclusive",
             f"no PostToolUse event; events seen: {checks.events_seen(ev)}; {note}",
         )
-    if head and tail:
-        return "shown", f"hook input held both ends of a 200,000 character result; {note}"
-    return "not_shown", f"hook input has head={head} tail={tail}; {note}"
+    text = _longest_text(records[0]["input"].get("tool_response"))
+    whole = (
+        len(text) == BIG_SIZE
+        and text.startswith(markers.BIG_HEAD)
+        and text.endswith(markers.BIG_TAIL)
+    )
+    if whole:
+        return "shown", f"hook input held one text of {BIG_SIZE:,} characters; {note}"
+    return "not_shown", f"the hook's longest text is {len(text):,} characters; {note}"
+
+
+def check_structured(ev: Evidence) -> tuple[Outcome, str]:
+    """A result has a text block and structuredContent; say which the hook and the model got."""
+    members = {
+        "structuredContent": markers.STRUCTURED_RESULT,
+        "content text": markers.STRUCTURED_TEXT,
+    }
+    model = [name for name, m in members.items() if checks.next_request_has(ev, m)]
+    hook = [name for name, m in members.items() if checks.hook_saw(ev, "PostToolUse", m)]
+    all_names = list(members)
+    detail = f"of {all_names}: the model received {model}; the hook received {hook}"
+    if not model:
+        return "inconclusive", f"baseline failed: neither member reached the model; {detail}"
+    missing = [name for name in model if name not in hook]
+    if missing:
+        return "not_shown", f"the model received {missing} that the hook did not; {detail}"
+    return "shown", detail
+
+
+def check_excluded(ev: Evidence) -> tuple[Outcome, str]:
+    """The same planted file, with the probe's normal flags: it must not reach the model."""
+    if not checks.scripted_requests(ev):
+        return "inconclusive", "no model request was made"
+    loaded = checks.any_request_has(ev, markers.CANARY)
+    fired = checks.instruction_file_loaded(ev)
+    detail = f"planted file reached the model: {loaded}; guard fired: {fired}"
+    return ("not_shown" if loaded or fired else "shown"), detail
+
+
+def check_canary(ev: Evidence) -> tuple[Outcome, str]:
+    """The known positive for the isolation guard: a planted ancestor CLAUDE.md must be caught."""
+    loaded = checks.any_request_has(ev, markers.CANARY)
+    detected = checks.instruction_file_loaded(ev)
+    detail = f"planted file reached the model: {loaded}; guard fired: {detected}"
+    return ("shown" if loaded and detected else "not_shown"), detail
 
 
 def error_check(marker: str) -> Check:
@@ -193,6 +250,23 @@ SEARCH = ToolCall("ToolSearch", {"query": "select:mcp__probe__echo_text"}, "tool
 
 DELIVERY: list[Scenario] = [
     Scenario(
+        "isolation-canary",
+        ISOLATION_CLAIM,
+        [Reply(text="done")],
+        [HookSpec("InstructionsLoaded", None, "record", "a")],
+        check=check_canary,
+        planted={"CLAUDE.md": f"Probe canary {markers.CANARY}\n"},
+        load_outside_settings=True,
+    ),
+    Scenario(
+        "isolation-exclusion",
+        EXCLUSION_CLAIM,
+        [Reply(text="done")],
+        [HookSpec("InstructionsLoaded", None, "record", "a")],
+        check=check_excluded,
+        planted={"CLAUDE.md": f"Probe canary {markers.CANARY}\n"},
+    ),
+    Scenario(
         "result-text",
         RESULT_CLAIM,
         script("echo_text"),
@@ -204,7 +278,7 @@ DELIVERY: list[Scenario] = [
         RESULT_CLAIM,
         script("echo_structured"),
         RECORD,
-        check=delivered(markers.STRUCTURED_RESULT),
+        check=check_structured,
     ),
     Scenario(
         "result-split",
