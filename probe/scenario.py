@@ -30,6 +30,7 @@ class Evidence:
     calls: list[str]
     transcript: Path | None
     screen: str = ""
+    steps_seen: tuple[bool, ...] = ()
 
 
 Check = Callable[[Evidence], tuple[Outcome, str]]

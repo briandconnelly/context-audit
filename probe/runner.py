@@ -68,6 +68,8 @@ def prepare(
     if not interactive:
         argv += ["-p", PROMPT, "--output-format", "stream-json", "--verbose"]
         argv += ["--include-hook-events"]
+    else:
+        argv += ["--permission-mode", "default"]
     if resume:
         argv += ["--resume", resume]
     argv += ["--settings", str(settings), "--mcp-config", str(mcp), "--strict-mcp-config"]

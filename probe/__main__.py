@@ -7,9 +7,11 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+from probe.pty_runner import run_interactive
 from probe.runner import run_scenario
 from probe.scenario import Result
 from probe.scenarios import ALL_SCENARIOS
+from probe.scenarios.interactive import DRIVE
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -26,7 +28,11 @@ def main(argv: list[str] | None = None) -> int:
     for scenario in ALL_SCENARIOS:
         if args.only and scenario.name not in args.only:
             continue
-        result = run_scenario(scenario, out / scenario.name)
+        if scenario.interactive:
+            steps, until = DRIVE[scenario.name]
+            result = run_interactive(scenario, steps, out / scenario.name, until=until, timeout=90)
+        else:
+            result = run_scenario(scenario, out / scenario.name)
         results.append(result)
         print(f"{result.name}: {result.outcome} - {result.reason}", flush=True)
     return 0 if results else 1
