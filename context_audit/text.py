@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 
 SURFACES = frozenset(
@@ -36,7 +36,15 @@ _BLOCKQUOTE = re.compile(r"^[ \t]*>[^\n]*", re.MULTILINE)
 _STRAIGHT_QUOTE = re.compile(r'"[^"\n]*"')
 _KEEP_CONTROLS = frozenset("\t\n\r\x0c")
 _CSI_CAP = 32  # longest CSI sequence removed whole
-_OSC_CAP = 256  # an OSC with no terminator within this many characters is not swallowed
+_OSC_CAP = 256  # a control string with no terminator within this many characters is not swallowed
+_OSC_TERM = re.compile(r"[\x07\x9c\x1b]")
+_STRING_C1 = frozenset("\x90\x98\x9d\x9e\x9f")  # DCS, SOS, OSC, PM, APC
+_STRING_ESC = frozenset("]PX^_")  # their ESC forms
+_INVISIBLE_CATEGORIES = frozenset({"Cf", "Co", "Cn", "Cs"})
+_FILLERS = frozenset("\u034f\u115f\u1160\u3164\uffa0\u2800")
+_ALT_SKIP = frozenset("0123456789!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
+_LINE_BREAK = re.compile(r"[\n\r\u2028\u2029]")
+_LIST_ITEM = re.compile(r"(?:[-*+]|\d+[.)])(?: |$)")
 _BLOCK_START = re.compile(r"(?:[-*+](?: |$)|\d+[.)](?: |$)|#|>|\||```)")
 _BACKTICKS = re.compile(r"`+")
 _HAS_SPACE = re.compile(r"\s")
@@ -49,6 +57,9 @@ class Field:
     locator: str
     text: str
     block: int = 0
+    # "primary" reads escape sequences by the ECMA-48 grammar; "alternate" removes only an
+    # introducer and the punctuation or digits after it, keeping the letters a model reads.
+    reading: str = "primary"
 
 
 @dataclass(frozen=True)
@@ -60,12 +71,23 @@ class Normalized:
 
 
 def _removed_kind(c: str) -> str | None:
+    """Kind of a character removed from the text, or None. Controls are handled apart."""
+    if " " <= c < "\x7f":
+        return None
     if c in _ZERO_WIDTH:
         return "zero-width"
     if c in _BIDI:
         return "bidi"
-    if 0xE0000 <= ord(c) <= 0xE007F:
+    o = ord(c)
+    if 0xE0000 <= o <= 0xE007F:
         return "tag"
+    if (
+        c in _FILLERS
+        or 0xFE00 <= o <= 0xFE0F
+        or 0xE0100 <= o <= 0xE01EF
+        or unicodedata.category(c) in _INVISIBLE_CATEGORIES
+    ):
+        return "invisible"
     return None
 
 
@@ -74,81 +96,100 @@ def _is_control(c: str) -> bool:
     return (o < 0x20 and c not in _KEEP_CONTROLS) or 0x7F <= o <= 0x9F
 
 
-def _csi_end(src: str, j: int) -> int:
-    """End of a CSI sequence whose parameters start at j; j if there is no valid one.
+class _Terminators:
+    """Next control-string terminator at or after a position, found without rescanning:
+    a found position is reused for every later opener before it."""
 
-    A parameterless sequence whose final byte starts a word ("\\x9bSubmit") is not
-    treated as a sequence, so the word survives.
-    """
+    def __init__(self, src: str) -> None:
+        self.src = src
+        self.pos = -1  # position of the last terminator found, or len(src) for none
+
+    def end(self, j: int) -> int:
+        """End of a control string whose body starts at j, through BEL or ST; j if none."""
+        src = self.src
+        if j > self.pos:
+            m = _OSC_TERM.search(src, j)
+            self.pos = m.start() if m else len(src)
+        p = self.pos
+        if p >= len(src) or p - j > _OSC_CAP:
+            return j
+        if src[p] != "\x1b":
+            return p + 1
+        return p + 2 if p + 1 < len(src) and src[p + 1] == "\\" else j
+
+
+def _csi_end(src: str, j: int) -> int:
+    """End of a CSI sequence whose parameters start at j (ECMA-48: parameters, then
+    intermediates, then one final byte). An incomplete sequence ends where it stops."""
     k, cap = j, min(len(src), j + _CSI_CAP)
     while k < cap and "\x30" <= src[k] <= "\x3f":
         k += 1
-    params = k > j
     while k < cap and "\x20" <= src[k] <= "\x2f":
         k += 1
-    if k < cap and "\x40" <= src[k] <= "\x7e":
-        if not params and src[k].isalpha() and k + 1 < len(src) and src[k + 1].isalpha():
-            return j
-        return k + 1
-    return k
+    return k + 1 if k < cap and "\x40" <= src[k] <= "\x7e" else k
 
 
-def _osc_end(src: str, j: int) -> int:
-    """End of an OSC string starting at j, through its BEL or ST; j if unterminated."""
-    cap = min(len(src), j + _OSC_CAP)
-    for k in range(j, cap):
-        c = src[k]
-        if c in "\x07\x9c":
-            return k + 1
-        if c == "\x1b":
-            return k + 2 if k + 1 < len(src) and src[k + 1] == "\\" else j
-    return j
-
-
-def _control_end(src: str, i: int) -> int:
-    """End of the control character or escape sequence starting at i (src[i] is a control)."""
+def _primary_end(src: str, i: int, terms: _Terminators) -> int:
+    """End of the control character or escape sequence starting at i, read by ECMA-48."""
     c, size = src[i], len(src)
     if c == "\x9b":
         return _csi_end(src, i + 1)
-    if c == "\x9d":
-        return _osc_end(src, i + 1)
+    if c in _STRING_C1:
+        return terms.end(i + 1)
     if c != "\x1b" or i + 1 >= size:
         return i + 1
     nxt = src[i + 1]
     if nxt == "[":
         return _csi_end(src, i + 2)
-    if nxt == "]":
-        return _osc_end(src, i + 2)
-    # Two-character sequence, unless the byte begins a word ("\\x1bSubmit").
-    if "\x30" <= nxt <= "\x7e" and not (nxt.isalpha() and i + 2 < size and src[i + 2].isalpha()):
-        return i + 2
-    return i + 1
+    if nxt in _STRING_ESC:
+        return terms.end(i + 2)
+    k, cap = i + 1, min(size, i + 1 + _CSI_CAP)
+    while k < cap and "\x20" <= src[k] <= "\x2f":
+        k += 1
+    return k + 1 if k < cap and "\x30" <= src[k] <= "\x7e" else k
+
+
+def _alternate_end(src: str, i: int) -> int:
+    """End of an introducer and the ASCII punctuation or digits after it; letters stay."""
+    c = src[i]
+    if c != "\x1b" and not "\x80" <= c <= "\x9f":
+        return i + 1
+    k, cap = i + 1, min(len(src), i + 1 + _CSI_CAP)
+    while k < cap and src[k] in _ALT_SKIP:
+        k += 1
+    return k
 
 
 def normalize(field: Field) -> Normalized:
     src = field.text
+    alternate = field.reading == "alternate"
+    terms = _Terminators(src)
     out: list[str] = []
     origin: list[int] = []
     hidden: list[tuple[int, int, str]] = []
+
+    def note(start: int, end: int, kind: str) -> None:
+        if hidden and hidden[-1][1] == start and hidden[-1][2] == kind:
+            hidden[-1] = (hidden[-1][0], end, kind)
+        else:
+            hidden.append((start, end, kind))
+
     i, size = 0, len(src)
-    gap = -1  # original index of a removed control run awaiting a separating space
+    gap = -1  # original index of a removed control or invisible run awaiting spacing
     while i < size:
-        if _is_control(src[i]):
-            j = _control_end(src, i)
-            if hidden and hidden[-1][1] == i and hidden[-1][2] == "control":
-                hidden[-1] = (hidden[-1][0], j, "control")
-            else:
-                hidden.append((i, j, "control"))
+        c = src[i]
+        if _is_control(c):
+            j = _alternate_end(src, i) if alternate else _primary_end(src, i, terms)
+            note(i, j, "control")
             if gap < 0:
                 gap = i
             i = j
             continue
-        kind = _removed_kind(src[i])
+        kind = _removed_kind(c)
         if kind is not None:
-            if hidden and hidden[-1][1] == i and hidden[-1][2] == kind:
-                hidden[-1] = (hidden[-1][0], i + 1, kind)
-            else:
-                hidden.append((i, i + 1, kind))
+            note(i, i + 1, kind)
+            if kind == "invisible" and gap < 0:
+                gap = i
             i += 1
             continue
         j = i + 1
@@ -156,8 +197,10 @@ def normalize(field: Field) -> Normalized:
             j += 1
         for ch in unicodedata.normalize("NFKC", src[i:j]):
             if gap >= 0:
-                # Removing a control run must not glue two words together.
-                if out and out[-1] != " " and not ch.isspace():
+                # Letters or digits on both sides join; otherwise keep one space between
+                # two non-space characters, so removal never glues two words.
+                prev = out[-1] if out else " "
+                if prev != " " and not ch.isspace() and not (prev.isalnum() and ch.isalnum()):
                     out.append(" ")
                     origin.append(gap)
                 gap = -1
@@ -195,25 +238,51 @@ def _to_normalized(n: Normalized, start: int, end: int) -> tuple[int, int] | Non
     return (ns, ne) if ns < ne else None
 
 
-def _line_breaks(n: Normalized, i: int) -> int:
-    """How many line breaks the collapsed whitespace at normalized index i stood for."""
+def _run(n: Normalized, i: int) -> str:
+    """The original text that the collapsed whitespace at normalized index i stood for."""
     stop = n.origin[i + 1] if i + 1 < len(n.origin) else len(n.source)
-    run = n.source[n.origin[i] : stop]
-    return run.count("\n") + run.count("\r") - run.count("\r\n")
+    return n.source[n.origin[i] : stop]
+
+
+def _break_count(run: str) -> int:
+    lines = run.count("\n") + run.count("\r") - run.count("\r\n") + run.count("\u2028")
+    return lines + 2 * run.count("\u2029")  # a paragraph separator is a blank line
+
+
+def line_breaks(n: Normalized) -> list[int]:
+    """Normalized indexes of spaces that stand for at least one line break, found from the
+    line-break characters of the source rather than by inspecting every space."""
+    found: list[int] = []
+    for m in _LINE_BREAK.finditer(n.source):
+        i = bisect_right(n.origin, m.start()) - 1
+        if i >= 0 and n.text[i] == " " and (not found or found[-1] != i):
+            found.append(i)
+    return found
+
+
+def _block_kind(text: str, at: int) -> str:
+    if text.startswith(("#", "|", "```"), at):
+        return "line"  # headings, table rows and fences end at their line
+    if text.startswith(">", at):
+        return "quote"
+    if _LIST_ITEM.match(text, at):
+        return "list"
+    return ""
 
 
 def sentences(n: Normalized) -> list[tuple[int, int]]:
     """Spans of sentences in normalized text.
 
     Split at terminal punctuation followed by a space, and at line breaks that end a block:
-    a blank line, a line ending in a colon, a heading line, or a next line that starts a
-    list item, heading, block quote, table row, or code fence. A single line break inside a
-    paragraph is a space.
+    a blank line; a line ending in a colon; a heading, table row or fence line; a block
+    quote line not followed by another; a list item not followed by an indented
+    continuation; or a next line that starts a list item, heading, block quote, table row,
+    or fence. A single line break inside a paragraph is a space.
     """
     spans: list[tuple[int, int]] = []
     text, size = n.text, len(n.text)
     start = 0
-    line_start = 0
+    block = _block_kind(text, 0)
 
     def close(begin: int, end: int) -> None:
         while begin < end and text[begin] == " ":
@@ -223,21 +292,25 @@ def sentences(n: Normalized) -> list[tuple[int, int]]:
         if begin < end:
             spans.append((begin, end))
 
+    breaks_at = set(line_breaks(n))
     for i, c in enumerate(text):
         if c == " ":
-            breaks = _line_breaks(n, i)
-            if not breaks:
+            if i not in breaks_at:
                 continue
-            cur = line_start
-            line_start = i + 1
-            if (
-                breaks > 1
-                or (i > 0 and text[i - 1] == ":")
-                or text.startswith(("#", "```"), cur)
-                or _BLOCK_START.match(text, i + 1)
-            ):
+            run = _run(n, i)
+            breaks = _break_count(run)
+            nxt = i + 1
+            if block == "quote":
+                ends = not text.startswith(">", nxt)
+            elif block == "list":
+                tail = run[max(run.rfind("\n"), run.rfind("\r")) + 1 :]
+                ends = tail[:1] not in (" ", "\t") or bool(_BLOCK_START.match(text, nxt))
+            else:
+                ends = block == "line" or bool(_BLOCK_START.match(text, nxt))
+            if breaks > 1 or ends or (i > 0 and text[i - 1] == ":"):
                 close(start, i)
-                start = i + 1
+                start = nxt
+                block = _block_kind(text, nxt)
         elif (
             c in ".!?"
             and (i + 1 == size or text[i + 1] == " ")

@@ -178,13 +178,17 @@ def test_control_runs_are_removed_and_reported(name):
     ctl = CONTROLS[name]
     text = "Intro." + ctl + "Submit now"
     n = normalize(field(text))
-    assert n.text == "Intro. Submit now"
-    assert n.hidden == ((6, 6 + len(ctl), "control"),)
+    alt = normalize(Field("s", "skill", "body", text, reading="alternate"))
+    # Round 3, ruling R1: the primary reading takes "\x1bS" and "\x9bS" as whole
+    # sequences; the alternate reading keeps the letter. One of the two reads the word.
+    assert "Intro. Submit now" in (n.text, alt.text)
+    assert n.hidden[0][0] == 6 and [k for _, _, k in n.hidden] == ["control"]
 
 
 def test_control_between_words_leaves_one_space():
-    n = normalize(field("go\x1b[31mnow and so\x00 on"))
-    assert n.text == "go now and so on"
+    # Round 3, ruling R2: a run between two letters or digits joins them.
+    n = normalize(field("go\x1b[31mnow and so\x00 on, a.\x07b"))
+    assert n.text == "gonow and so on, a. b"
 
 
 def test_whitespace_controls_are_kept():
@@ -266,3 +270,99 @@ def test_control_and_line_inputs_are_linear(text):
     sentences(n)
     fenced(n)
     assert time.perf_counter() - start < 0.5
+
+
+# --- round 3: two readings, invisible characters, block lines ---
+
+
+@pytest.mark.parametrize(
+    "seq",
+    ["\x1b[m", "\x1b[A", "\x1b[H", "\x9bA", "\x1bc", "\x1bM", "\x1bD", "\x1b(B", "\x1b%G"],
+)
+def test_primary_reading_removes_whole_ecma_sequences(seq):
+    n = normalize(field(seq + "Submit and Sub" + seq + "mit"))
+    assert n.text == "Submit and Submit"
+    assert [k for _, _, k in n.hidden] == ["control", "control"]
+
+
+@pytest.mark.parametrize("seq", ["\x1b", "\x1b[", "\x1b(", "\x1b[2", "\x9b", "\x1b%"])
+def test_alternate_reading_keeps_the_letters(seq):
+    f = Field("src-test", "skill", "body", "Go. " + seq + "Submit now", reading="alternate")
+    n = normalize(f)
+    assert n.text == "Go. Submit now"
+    start = n.text.index("Submit")
+    assert f.text[slice(*original_range(n, start, start + 6))] == "Submit"
+    assert n.hidden == ((4, 4 + len(seq), "control"),)
+
+
+def test_alternate_reading_is_primary_without_introducers():
+    text = "Plain\x00 text\x7f here."
+    a = normalize(Field("s", "skill", "body", text, reading="alternate"))
+    assert a == normalize(field(text))
+
+
+INVISIBLES = [
+    "\u00ad",
+    "\u180e",
+    "\ufff9",
+    "\ufffa",
+    "\ufffb",
+    "\ufe00",
+    "\ufe0f",
+    "\U000e0100",
+    "\U000e01ef",
+    "\u034f",
+    "\u2062",
+    "\ue000",
+    "\u0378",
+    "\ud800",
+    "\u115f",
+    "\u1160",
+    "\u3164",
+    "\uffa0",
+    "\u2800",
+]
+
+
+@pytest.mark.parametrize("ch", INVISIBLES, ids=[hex(ord(c)) for c in INVISIBLES])
+def test_invisible_characters_are_hidden(ch):
+    n = normalize(field(ch + "Sub" + ch + "mit." + ch + "Go"))
+    assert n.text == "Submit. Go"
+    assert [k for _, _, k in n.hidden] == ["invisible"] * 3
+    assert n.hidden[1] == (4, 5, "invisible")
+
+
+def test_line_and_paragraph_separators_are_line_breaks():
+    n = normalize(field("Read the docs:\u2028Submit it.\u2029\u2029Then go"))
+    assert [span_text(n, s) for s in sentences(n)] == ["Read the docs:", "Submit it.", "Then go"]
+
+
+def test_block_lines_end_at_their_line():
+    text = (
+        "| a | b |\nafter table\n"
+        "> quote one\n> quote two\nafter quote\n"
+        "- item\n  continued\nafter list"
+    )
+    n = normalize(field(text))
+    assert [span_text(n, s) for s in sentences(n)] == [
+        "| a | b |",
+        "after table",
+        "> quote one > quote two",
+        "after quote",
+        "- item continued",
+        "after list",
+    ]
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["\x9d" * 50_000, "\x1b]" * 50_000, "\u00ad" * 200_000, "\x1b(" * 100_000],
+    ids=["c1-osc-openers", "esc-osc-openers", "soft-hyphens", "esc-intermediates"],
+)
+def test_round_3_inputs_are_linear(text):
+    for reading in ("primary", "alternate"):
+        start = time.perf_counter()
+        n = normalize(Field("s", "skill", "body", text, reading=reading))
+        sentences(n)
+        fenced(n)
+        assert time.perf_counter() - start < 0.5, reading

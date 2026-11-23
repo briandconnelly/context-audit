@@ -18,7 +18,7 @@ import time
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 
-from context_audit.text import Field, Normalized, fenced, sentences
+from context_audit.text import Field, Normalized, fenced, line_breaks, sentences
 
 FEATURES = ("act", "call", "conceal-act", "audience", "solicit", "override", "hidden")
 
@@ -78,7 +78,7 @@ _ACT_VERBS = (
 )
 # Clause starts and polite openers that put the verb in imperative position.
 _OPENER = (
-    r"(?:^|[.!?:;,(\"“`]|\b(?:and|et|und|then|also|now|first|next|please|kindly"
+    r"(?:^|[\n.!?:;,(\"“`]|\b(?:and|et|und|then|also|now|first|next|please|kindly"
     r"|afterwards|so|or|just|immediately|always|simply|you\s+should|you\s+must"
     r"|you\s+need\s+to|you{_A}ll\s+need\s+to|you\s+will\s+need\s+to|you\s+can|you\s+may"
     r"|be\s+sure\s+to|make\s+sure\s+to|remember\s+to|don{_A}t\s+forget\s+to"
@@ -884,6 +884,126 @@ def _others(s: str) -> list[_Raw]:
     return out
 
 
+# A line that ends on one of these words continues on the next line, so the next line's
+# first word is not in imperative position ("the function will\nsend the request").
+_CONTINUES = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "this",
+        "that",
+        "these",
+        "those",
+        "its",
+        "their",
+        "our",
+        "your",
+        "my",
+        "his",
+        "her",
+        "some",
+        "any",
+        "each",
+        "every",
+        "no",
+        "of",
+        "to",
+        "in",
+        "on",
+        "at",
+        "by",
+        "for",
+        "with",
+        "from",
+        "into",
+        "onto",
+        "about",
+        "via",
+        "than",
+        "as",
+        "per",
+        "over",
+        "under",
+        "after",
+        "before",
+        "between",
+        "through",
+        "without",
+        "within",
+        "upon",
+        "will",
+        "would",
+        "can",
+        "could",
+        "should",
+        "may",
+        "might",
+        "must",
+        "shall",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "has",
+        "have",
+        "had",
+        "do",
+        "does",
+        "did",
+        "not",
+        "and",
+        "or",
+        "but",
+        "nor",
+        "if",
+        "when",
+        "while",
+        "which",
+        "who",
+        "whom",
+        "whose",
+        "where",
+        "so",
+        "it",
+        "they",
+        "we",
+        "you",
+        "he",
+        "she",
+        "i",
+    }
+)
+_LINE_LEAD = re.compile(r"[\s\-*•>\d.)]*(?=\w)")
+
+
+def _mark_line_starts(n: Normalized) -> str:
+    """n.text with each line break that starts a fresh line written as a newline (same
+    length), so imperative openers anchored at a sentence start also hold at a line start.
+
+    A line starts fresh when its first word is capitalised and the previous line does not
+    end on a word that needs a continuation.
+    """
+    text = n.text
+    chars: list[str] | None = None
+    for i in line_breaks(n):
+        if i == 0 or text[i - 1] in ".!?:,-(":
+            continue  # already a sentence start, or a line that plainly continues
+        lead = _LINE_LEAD.match(text, i + 1)
+        first = lead.end() if lead else i + 1
+        if first >= len(text) or not text[first].isupper():
+            continue
+        if text[text.rfind(" ", 0, i) + 1 : i].lower() in _CONTINUES:
+            continue
+        if chars is None:
+            chars = list(text)
+        chars[i] = "\n"
+    return text if chars is None else "".join(chars)
+
+
 def _inside(spans: list[tuple[int, int]], starts: list[int], pos: int) -> bool:
     k = bisect_right(starts, pos) - 1
     return k >= 0 and spans[k][0] <= pos < spans[k][1]
@@ -902,7 +1022,7 @@ def detect(
     scanning stops and the result has `complete = False`. Hidden-character matches are
     always reported, since they come from normalization and cost nothing here.
     """
-    text = n.text
+    text = _mark_line_starts(n)
     sents = sentences(n)
     quotes = fenced(n)
     qstarts = [a for a, _ in quotes]
