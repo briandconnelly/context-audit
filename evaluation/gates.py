@@ -51,6 +51,7 @@ class ItemOutcome:
     retries: int
     completed: bool  # False when every attempt ran out of time
     error: str | None  # exception type name only
+    span_repeated: bool = False  # the span occurs more than once in the text
 
     @property
     def ok(self) -> bool:
@@ -81,6 +82,7 @@ class GateReport:
     retried: tuple[str, ...]
     never_completed: tuple[str, ...]
     errors: tuple[str, ...]
+    repeated_spans: int = 0
     open_set: dict[str, dict[str, int]] = field(default_factory=dict)  # expected -> top -> n
     positives_recall: tuple[int, int, tuple[str, ...]] = (0, 0, ())
     by_surface: dict[str, dict[str, list[int]]] = field(default_factory=dict)  # set -> [ok, n]
@@ -105,10 +107,13 @@ def measure(item: Item, state_root: Path) -> ItemOutcome:
             if completed or retries + 1 >= ATTEMPTS:
                 break
         got = None
+        repeated = False
         span = item["span"]
         if item["expected"] == "high" and span:
-            start = BLOCK_SEPARATOR.join(t for _, t in blocks).find(span)
-            got = start >= 0 and caught(blocks, (start, start + len(span)), result.findings)
+            joined = BLOCK_SEPARATOR.join(t for _, t in blocks)
+            starts = [i for i in range(len(joined)) if joined.startswith(span, i)]
+            repeated = len(starts) > 1
+            got = any(caught(blocks, (a, a + len(span)), result.findings) for a in starts)
         sev = Counter(f.severity for f in result.findings)
         return ItemOutcome(
             **labels,
@@ -119,6 +124,7 @@ def measure(item: Item, state_root: Path) -> ItemOutcome:
             retries=retries,
             completed=completed,
             error=None,
+            span_repeated=repeated,
         )
     except Exception as exc:  # noqa: BLE001 - reported by type, never by message
         return ItemOutcome(
@@ -192,11 +198,11 @@ def build_report(
     gates.append(
         GateResult(
             "seeded warning investigated end to end",
-            None if receipt_status is None else receipt_status == "shown",
+            receipt_status == "shown",
             int(receipt_status == "shown"),
             0 if receipt_status is None else 1,
             (),
-            "not measured here"
+            "not measured: Task 12 receipt missing or unreadable"
             if receipt_status is None
             else f"Task 12 transcript-readback receipt: {receipt_status}",
         )
@@ -216,6 +222,7 @@ def build_report(
         retried=_failed(every, lambda o: o.retries > 0),
         never_completed=_failed(every, lambda o: not o.completed and not o.error),
         errors=_failed(every, lambda o: o.error is not None),
+        repeated_spans=sum(1 for o in every if o.span_repeated),
         open_set=dict(open_set),
         positives_recall=(len(pos) - len(pfail), len(pos), pfail),
         by_surface=_breakdown(outcomes, "surface"),
@@ -232,6 +239,7 @@ def _latency_gate(latency: LatencyReport | None) -> GateResult:
     clean = total - sum(r.timeouts + r.failures for r in latency.runs)
     detail = "; ".join(
         f"{r.concurrency}-way p95 {r.p95_ms:.1f} ms, {r.timeouts} timeouts, {r.failures} failures"
+        f" (canaries warned {r.canaries_warned}/{r.canaries}, benign warned {r.benign_warned})"
         for r in latency.runs
     )
     return GateResult("hook latency", not bad, clean, total, (), detail)
@@ -295,6 +303,7 @@ def render(report: GateReport) -> str:
         f"items retried for time budget: {len(report.retried)} {list(report.retried)}",
         f"items never completed: {len(report.never_completed)} {list(report.never_completed)}",
         f"items that raised: {len(report.errors)} {list(report.errors)}",
+        f"expected-high items whose span occurs more than once: {report.repeated_spans}",
     ]
     return "\n".join(lines)
 

@@ -177,13 +177,41 @@ def test_a_broken_heldout_line_reports_no_text(tmp_path, capsys):
     assert MARKER not in printed.out + printed.err + str(exc.value)
 
 
+def test_a_missing_receipt_fails_the_run():
+    g = _gate(build_report({}, receipt_status=None), "seeded warning investigated end to end")
+    assert g.passed is False
+    assert "not measured" in g.detail
+
+
+def test_a_repeated_span_is_credited_at_any_occurrence(tmp_path):
+    item = dict(_canary("can-001"))
+    span = item["span"]
+    # The first occurrence sits inside a code fence, which the scanner treats as quoted.
+    item["text"] = f"```\n{span}\n```\n\n{item['text']}"
+    item.pop("blocks", None)
+    o = measure(item, tmp_path)
+    assert o.span_repeated is True
+    assert o.caught is True
+    assert build_report({"heldout_in_scope": [o]}).repeated_spans == 1
+
+
+def test_latency_gate_fails_when_the_hook_does_nothing(tmp_path):
+    silent = tmp_path / "silent-hook"
+    silent.write_text("#!/bin/sh\ncat >/dev/null\nexit 0\n")
+    r = measure_latency(samples=20, concurrency=(1,), hook=silent)
+    assert r.runs[0].failures == 1  # the one canary payload produced no warning
+    assert _gate(build_report({}, latency=r), "hook latency").passed is False
+
+
 def test_latency_report_states_its_workload():
-    r = measure_latency(samples=6, concurrency=(1, 2))
+    r = measure_latency(samples=20, concurrency=(1, 2))
     assert isinstance(r, LatencyReport)
     assert r.machine and r.os and r.python and r.hook_python
-    assert r.samples == 6
+    assert r.samples == 20
     assert r.payload_mix and r.payload_bytes["max"] >= r.payload_bytes["min"] > 0
     assert [run.concurrency for run in r.runs] == [1, 2]
     for run in r.runs:
         assert run.timeouts == 0 and run.failures == 0
+        assert run.canaries == 1 and run.canaries_warned == 1
+        assert run.benign_warned >= 0
         assert 0 < run.p50_ms <= run.p95_ms <= run.max_ms
