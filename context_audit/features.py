@@ -891,7 +891,7 @@ _OVERRIDE_NEGATIVE_FORM = re.compile(
 # either order relative to the override; its passive ("once approved by the user", "when
 # explicitly requested"); or a directive to ask or confirm with the user.
 _USER_SUBJECT = (
-    r"(?:(?:the|a|your)\s+)?(?:user|users|requester|operator|owner|customer|human)s?|they"
+    r"(?:(?:(?:the|a|your)\s+)?(?:user|users|requester|operator|owner|customer|human)s?|they)"
 )
 _APPROVING = (
     r"(?:approv|ask|request|confirm|opt|choos|chose|select|enabl|instruct|agree|consent"
@@ -901,16 +901,88 @@ _CONDITION_OPEN = (
     r"(?:if|when|whenever|once|since|after|unless|until|provided(?:\s+that)?"
     r"|as\s+long\s+as)"
 )
-_APPROVAL_CONDITION = re.compile(
+_USER_CLAUSE = re.compile(
     rf"\b{_CONDITION_OPEN}\s+(?:[\w'’-]+\s+){{0,3}}?{_USER_SUBJECT}\b"
-    rf"(?:\s+[\w'’-]+){{0,3}}?\s+{_APPROVING}\b"
-    rf"|\b{_CONDITION_OPEN}\s+(?:(?:explicitly|expressly|specifically|already)\s+)?"
+    rf"(?:\s+[\w'’-]+){{0,3}}?\s+{_APPROVING}\b",
+    _I,
+)
+# The passive leaves the approved thing as the omitted subject: the act itself.
+_PASSIVE_APPROVAL = re.compile(
+    rf"\b{_CONDITION_OPEN}\s+(?:(?:explicitly|expressly|specifically|already)\s+)?"
     r"(?:approved|requested|confirmed|instructed|asked\s+for|enabled|chosen|selected"
-    r"|authori[sz]ed|allowed)\b"
-    r"|(?:^|[,;:]\s*|\b(?:and|then|please)\s+)(?:ask|confirm\s+with|check\s+with)\s+"
+    r"|authori[sz]ed|allowed)\b",
+    _I,
+)
+_ASK_USER = re.compile(
+    r"(?:^|[,;:]\s*|\b(?:and|then|please)\s+)(?:ask|confirm\s+with|check\s+with)\s+"
     r"(?:the\s+)?(?:user|them|requester|operator)\b",
     _I,
 )
+_ASK_BEFORE = re.compile(r"[^,;:.]{0,30}?\bbefore\b", _I)
+_OBJECT_STOP = re.compile(r"[,;:.]|\b(?:then|and|but)\b", _I)
+# An object that refers to the act or step itself: "this exact action", "it", "the change".
+_ANAPHOR = re.compile(
+    r"\s*(?:(?:this|it|that|so|them|these|those)\b|(?:the|this)\s+(?:exact\s+)?(?:action"
+    r"|change|step|operation|request)\b)",
+    _I,
+)
+_ANY_THING = frozenset({"anything", "something", "everything", "whatever", "any"})
+_TARGET_STEMS = (
+    "confi",
+    "appro",
+    "revie",
+    "sign",
+    "conse",
+    "permi",
+    "skip",
+    "bypas",
+    "waive",
+    "overr",
+    "ignor",
+    "disre",
+)
+_NOT_ABOUT = frozenset({"user", "users", "requester", "operator", "owner", "customer", "you"})
+
+
+def _content_stems(text: str) -> set[str]:
+    words = _WORD.findall(text.lower())
+    return {
+        w[:5]
+        for w in words
+        if len(w) >= 3
+        and w not in _FUNCTION_WORDS
+        and w not in _PREPOSITIONS
+        and w not in _NOT_ABOUT
+        and not w.endswith("ly")
+        and w not in {"once", "twice", "again", "already", "just", "first", "more"}
+    }
+
+
+def _conditioned(s: str, act_starts: list[int]) -> bool:
+    """Whether an override in s is conditioned on the user's own approval, request or
+    instruction about the overridden step or the act (not about something else), or
+    directs asking the user before the act is done."""
+    if _PASSIVE_APPROVAL.search(s):
+        return True
+    for m in _USER_CLAUSE.finditer(s):
+        stop = _OBJECT_STOP.search(s, m.end())
+        obj = s[m.end() : stop.start() if stop else len(s)]
+        words = set(_WORD.findall(obj.lower()))
+        if words & _ANY_THING:
+            continue  # "once the user asks anything": not about the act
+        if _ANAPHOR.match(obj):
+            return True
+        stems = _content_stems(obj)
+        if not stems or any(t in w for w in words for t in _TARGET_STEMS):
+            return True
+        rest = _content_stems(s[: m.start()] + " " + s[stop.start() if stop else len(s) :])
+        if stems & rest:
+            return True  # repeats the act's verb or object: "requests the deletion"
+    for m in _ASK_USER.finditer(s):
+        if _ASK_BEFORE.match(s, m.end()) or any(a > m.end() for a in act_starts):
+            return True
+    return False
+
 
 # --- prefilter: anchor words without which a feature's patterns cannot match ---------
 
@@ -1039,19 +1111,18 @@ def _act_heads(s: str) -> Iterator[re.Match[str]]:
 
 def _directives(
     s: str, own_tool: str | None, fragment: Callable[[int], bool] | None = None
-) -> tuple[list[_Raw], list[int], set[int]]:
+) -> tuple[list[_Raw], list[int]]:
     """act and call matches in sentence s (sentence-relative), and the start of every act
     and call found, including those absorbed into a call or naming the field's own tool.
 
     `fragment(pos)` says whether the word at pos begins right after removed characters
     (a control or escape sequence): the rest of a word, not a word, so it is not taken as
-    an open-class imperative. The third value holds the starts of open-class acts."""
+    an open-class imperative."""
 
     def neg(start: int) -> bool:
         return _negated(s, start, 0)
 
     acts: list[tuple[int, int]] = []
-    open_starts: set[int] = set()
     for m in _act_heads(s):
         known = m.group("verb") is not None
         head = "verb" if known else "open"
@@ -1068,8 +1139,6 @@ def _directives(
             continue
         if not neg(v):
             acts.append((v, _clause(s, v, 0, len(s))[1]))
-            if not known:
-                open_starts.add(v)
     acts.sort()
     act_starts = [a for a, _ in acts]
 
@@ -1099,8 +1168,7 @@ def _directives(
         absorbed.update(act_starts[bisect_left(act_starts, clo) : bisect_left(act_starts, chi)])
     out: list[_Raw] = [("call", a, b, False, t) for a, b, t in calls if t != own_tool]
     out.extend(("act", a, b, False, None) for a, b in acts if a not in absorbed)
-    open_starts.intersection_update(a for a, _ in acts)
-    return out, sorted([a for a, _ in acts] + [c for c, _, _ in calls]), open_starts
+    return out, sorted([a for a, _ in acts] + [c for c, _, _ in calls])
 
 
 # A manner phrase led by a negated gerund: "without telling the user", "not notifying".
@@ -1150,9 +1218,7 @@ def _subject_kind(s: str, pos: int, has_referent: bool) -> str:
     return kind
 
 
-def _conceal(
-    s: str, has_referent: bool, directives: list[int], listed: list[int] | None = None
-) -> list[_Raw]:
+def _conceal(s: str, has_referent: bool, directives: list[int]) -> list[_Raw]:
     """conceal-act matches in sentence s.
 
     Communication verbs (tell, mention, the awareness verbs) conceal anything but a plain
@@ -1238,13 +1304,10 @@ def _conceal(
     # Withholding data keeps precedence through a pronoun: "Mask the card number in logs
     # and never display it to anyone": "it" is the nearest noun phrase before it.
     out = [o for o in out if not _pronoun_for_data(s, o[1], o[2])]
-    # A manner adverb alone is weak evidence: it needs a listed verb or a call, not an
-    # open-class head ("Refresh the token quietly when it expires").
-    strong = directives if listed is None else listed
-    if strong or proverb:
+    if directives or proverb:
         for m in _SILENT.finditer(s):
             if not _negated(s, m.start(), 0) and (
-                proverb or _modifies_directive(s, m.start(), strong)
+                proverb or _modifies_directive(s, m.start(), directives)
             ):
                 out.append(("conceal-act", m.start(), m.end(), False, None))
     return out
@@ -1327,7 +1390,7 @@ def _conceal_by_proximity(
             insort(taken, (a, b))
 
 
-def _others(s: str) -> list[_Raw]:
+def _others(s: str, act_starts: list[int] = []) -> list[_Raw]:  # noqa: B006
     """audience, solicit, and override matches in sentence s."""
     out: list[_Raw] = []
     if _ANCHOR["audience"].search(s):
@@ -1335,7 +1398,7 @@ def _others(s: str) -> list[_Raw]:
     if _ANCHOR["solicit"].search(s):
         out.extend(("solicit", m.start(), m.end(), False, None) for m in _SOLICIT.finditer(s))
     if _ANCHOR["override"].search(s):
-        conditioned = _APPROVAL_CONDITION.search(s) is not None
+        conditioned = _conditioned(s, act_starts)
         for m in _OVERRIDE.finditer(s):
             if not _negated(s, m.start(), 0):
                 out.append(("override", m.start(), m.end(), conditioned, None))
@@ -1351,7 +1414,7 @@ def _others(s: str) -> list[_Raw]:
         if _negated(s, a, 0) or _reported(s, a):
             continue
         insort(taken, (a, b))
-        out.append(("override", a, b, _APPROVAL_CONDITION.search(s) is not None, None))
+        out.append(("override", a, b, _conditioned(s, act_starts), None))
     return out
 
 
@@ -1509,6 +1572,26 @@ def _inside(spans: list[tuple[int, int]], starts: list[int], pos: int) -> bool:
     return k >= 0 and spans[k][0] <= pos < spans[k][1]
 
 
+_PIECE = 2_000  # characters: the longest piece of a sentence worked at once
+
+
+def _pieces(text: str, lo: int, hi: int) -> list[tuple[int, int]]:
+    """[lo, hi) cut into pieces of at most about _PIECE characters, each ending at the last
+    clause mark (or else the last space) before the limit."""
+    out: list[tuple[int, int]] = []
+    while hi - lo > _PIECE:
+        window = text[lo : lo + _PIECE]
+        cut = max(window.rfind("; "), window.rfind(", "), window.rfind(": "))
+        if cut < _PIECE // 2:
+            cut = window.rfind(" ")
+        if cut <= 0:
+            cut = _PIECE
+        out.append((lo, lo + cut + 1))
+        lo += cut + 1
+    out.append((lo, hi))
+    return out
+
+
 def detect(
     field: Field,
     n: Normalized,
@@ -1544,27 +1627,34 @@ def detect(
         return bool(gap) and not gap.isspace()
 
     prev_directive = False
-    for idx, (lo, hi) in enumerate(sents):
-        if deadline is not None and time.monotonic() > deadline:
-            result.complete = False
+    for idx, (s_lo, s_hi) in enumerate(sents):
+        # A very long sentence is worked in clause-bounded pieces, so the deadline is
+        # checked inside it and no step sees more than _PIECE characters at once. Every
+        # piece keeps the sentence's index, so joining is unchanged.
+        directive_here = False
+        for lo, hi in _pieces(text, s_lo, s_hi):
+            if deadline is not None and time.monotonic() > deadline:
+                result.complete = False
+                break
+            s = text[lo:hi]
+            raw, starts = _directives(s, own_tool, lambda p, lo=lo: fragment(lo + p))
+            directive = bool(starts)
+            if _ANCHOR["conceal"].search(s):
+                conceal = _conceal(s, directive or directive_here or prev_directive, starts)
+                # A verb that is both an act and the head of its own concealment ("Leave
+                # the rating out of the reply") is one concealment, not a directive plus one.
+                heads = {c[1] for c in conceal}
+                raw = [r for r in raw if not (r[0] == "act" and r[1] in heads)]
+                add(conceal, lo, idx)
+            others = _others(s, starts)
+            # Likewise a verb that heads its own override ("Skip the confirmation ...").
+            heads = {o[1] for o in others if o[0] == "override"}
+            add([r for r in raw if not (r[0] == "act" and r[1] in heads)], lo, idx)
+            add(others, lo, idx)
+            directive_here = directive_here or directive
+        if not result.complete:
             break
-        s = text[lo:hi]
-        raw, starts, open_starts = _directives(s, own_tool, lambda p, lo=lo: fragment(lo + p))
-        directive = bool(starts)
-        if _ANCHOR["conceal"].search(s):
-            listed = [a for a in starts if a not in open_starts]
-            conceal = _conceal(s, directive or prev_directive, starts, listed)
-            # A verb that is both an act and the head of its own concealment ("Leave the
-            # rating out of the reply") is one concealment, not a directive plus one.
-            heads = {c[1] for c in conceal}
-            raw = [r for r in raw if not (r[0] == "act" and r[1] in heads)]
-            add(conceal, lo, idx)
-        others = _others(s)
-        # Likewise a verb that heads its own override ("Skip the confirmation ...").
-        heads = {o[1] for o in others if o[0] == "override"}
-        add([r for r in raw if not (r[0] == "act" and r[1] in heads)], lo, idx)
-        add(others, lo, idx)
-        prev_directive = directive
+        prev_directive = directive_here
 
     sstarts = [a for a, _ in sents]
     for h_start, h_end, _kind in n.hidden:

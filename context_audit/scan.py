@@ -93,12 +93,15 @@ def scan_fields(
             break
         if reason:
             break
-    findings = judge(scanned, matches, state_root) if any(matches.values()) else []
+    findings = (
+        judge(scanned, matches, state_root, deadline=deadline) if any(matches.values()) else []
+    )
     if alt_fields:
         fields = [alt_fields.get(i, f) for i, f in enumerate(scanned)]
         merged = {i: alt_matches.get(i, m) for i, m in matches.items()}
         if any(merged.values()):
-            findings = _merge_alternate(findings, judge(fields, merged, state_root))
+            alt = judge(fields, merged, state_root, deadline=deadline)
+            findings = _merge_alternate(findings, alt)
     # The budget holds through judging too: a scan that ran past its deadline is never
     # reported complete, whatever step overran.
     if not reason and time.monotonic() > deadline:

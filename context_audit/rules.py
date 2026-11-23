@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import hashlib
 import re
+import time
 from bisect import bisect_left
 from dataclasses import dataclass
-from itertools import chain, combinations, product
 from pathlib import Path
 
 from context_audit import RULE_VERSION
@@ -135,25 +135,6 @@ def _drop_contained(hits: list[_Hit]) -> list[_Hit]:
     return kept
 
 
-def _joined(a: _Hit, b: _Hit, refers_back: list[bool]) -> bool:
-    if a.pos == b.pos:
-        return True
-    later = max(a.pos, b.pos)
-    return abs(a.pos - b.pos) == 1 and refers_back[later]
-
-
-def _high_pair(a: _Hit, b: _Hit, refers_back: list[bool]) -> bool:
-    # Spec precedence: quotation, then the user-approval condition, then the table. Any
-    # conditioned match (only override carries the flag) is excluded from high.
-    if frozenset({a.match.feature, b.match.feature}) not in HIGH_TABLE:
-        return False
-    if a.match.quoted or b.match.quoted or a.match.conditioned or b.match.conditioned:
-        return False
-    if a.match.record or b.match.record:  # a record line reports; see `Match.record`
-        return False
-    return _joined(a, b, refers_back)
-
-
 def _root(parent: list[int], k: int) -> int:
     """Union-find root, halving the path as it goes."""
     while parent[k] != k:
@@ -182,8 +163,67 @@ def _finding(fields: list[Field], hits: list[_Hit], severity: str, root: Path) -
     )
 
 
-def judge(fields: list[Field], matches: dict[int, list[Match]], state_root: Path) -> list[Finding]:
-    """Findings for `matches`, keyed by each field's index in `fields`."""
+def judge(
+    fields: list[Field],
+    matches: dict[int, list[Match]],
+    state_root: Path,
+    *,
+    deadline: float | None = None,
+) -> list[Finding]:
+    """Findings for `matches`, keyed by each field's index in `fields`. With `deadline`
+    (a `time.monotonic()` value) it stops there and returns the findings made so far;
+    the caller sees the overrun on the clock."""
+    return judge_until(fields, matches, state_root, deadline)[0]
+
+
+def _order(f: Finding) -> tuple:
+    return (f.source_id, f.ranges)
+
+
+def _eligible(h: _Hit) -> bool:
+    """Whether a hit may join a high: not quoted, not conditioned on the user's approval,
+    not on a record line (spec precedence: quotation, then the condition, then the table)."""
+    m = h.match
+    return m.feature in _TABLE_FEATURES and not (m.quoted or m.conditioned or m.record)
+
+
+def _link(
+    hits: list[_Hit], a: list[int], b: list[int], parent: list[int], in_high: set[int]
+) -> None:
+    """Join every table pair between hit groups a and b (one sentence, or a sentence and
+    the next that refers back). Linking each hit to one representative of each partner
+    feature gives the same groups as testing every pair, in linear time."""
+    by_a: dict[str, list[int]] = {}
+    by_b: dict[str, list[int]] = {}
+    for k in a:
+        if _eligible(hits[k]):
+            by_a.setdefault(hits[k].match.feature, []).append(k)
+    for k in b:
+        if _eligible(hits[k]):
+            by_b.setdefault(hits[k].match.feature, []).append(k)
+    for pair in HIGH_TABLE:
+        f, g = tuple(pair)
+        for x_feat, y_feat in ((f, g), (g, f)):
+            xs, ys = by_a.get(x_feat), by_b.get(y_feat)
+            if not xs or not ys:
+                continue
+            x0, y0 = xs[0], ys[0]
+            for x in xs:
+                parent[_root(parent, x)] = _root(parent, y0)
+            for y in ys:
+                parent[_root(parent, y)] = _root(parent, x0)
+            in_high.update(xs)
+            in_high.update(ys)
+
+
+def judge_until(
+    fields: list[Field],
+    matches: dict[int, list[Match]],
+    state_root: Path,
+    deadline: float | None,
+) -> tuple[list[Finding], bool]:
+    """`judge`, stopping at `deadline` (a `time.monotonic()` value). The flag is False when
+    it stopped early; the findings made so far are returned."""
     findings: list[Finding] = []
     for run in _runs(fields):
         if not any(matches.get(i) for i in run):
@@ -197,21 +237,24 @@ def judge(fields: list[Field], matches: dict[int, list[Match]], state_root: Path
                 by_pos.setdefault(h.pos, []).append(k)
         in_high: set[int] = set()
         for pos, here in by_pos.items():
-            pairs = chain(combinations(here, 2), product(here, by_pos.get(pos + 1, ())))
-            for x, y in pairs:
-                if _high_pair(hits[x], hits[y], refers_back):
-                    parent[_root(parent, x)] = _root(parent, y)
-                    in_high.update((x, y))
+            if deadline is not None and time.monotonic() > deadline:
+                return sorted(findings, key=_order), False
+            _link(hits, here, here, parent, in_high)
+            later = by_pos.get(pos + 1)
+            if later and refers_back[pos + 1]:
+                _link(hits, here, later, parent, in_high)
         groups: dict[int, list[_Hit]] = {}
         for k in sorted(in_high):
             groups.setdefault(_root(parent, k), []).append(hits[k])
         findings.extend(_finding(fields, g, "high", state_root) for g in groups.values())
         for k, h in enumerate(hits):
+            if deadline is not None and k % 256 == 0 and time.monotonic() > deadline:
+                return sorted(findings, key=_order), False
             if k in in_high:
                 continue
             lone_directive = h.match.feature in {"act", "call"}
             if lone_directive and fields[h.field].surface not in _DIRECTIVE_SURFACES:
                 continue
             findings.append(_finding(fields, [h], "review", state_root))
-    findings.sort(key=lambda f: (f.source_id, f.ranges))
-    return findings
+    findings.sort(key=_order)
+    return findings, True
