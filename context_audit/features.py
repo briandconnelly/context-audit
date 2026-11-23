@@ -18,6 +18,8 @@ import time
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 
+from context_audit import lexicon as lx
+from context_audit.lexicon import alt
 from context_audit.text import Field, Normalized, fenced, line_breaks, record_lines, sentences
 
 FEATURES = ("act", "call", "conceal-act", "audience", "solicit", "override", "hidden")
@@ -80,29 +82,36 @@ _ACT_VERBS = (
     "|visit|navigate|browse|click|ask|contact|lock|unlock|transfer"
     # a few translated imperatives, for the translated concealment and override phrases
     "|l[öo]sche|sende|schicke|envie|env[íi]a|envoyez|envoie|supprimez|supprime|borra|elimina"
+    # placing, filing, recording and reserving (see `lexicon.PLACING_VERBS`)
+    "|" + alt(lx.PLACING_VERBS)
 )
 # Clause starts and polite openers that put the verb in imperative position.
 _OPENER = (
     r"(?P<opener>^|[\n.!?:;,(\]\"“`]|\b(?:and|et|und|then|also|now|first|next|please|kindly"
-    r"|afterwards|so|or|just|immediately|always|simply|you\s+should|you\s+must"
+    r"|afterwards|instead|so|or|just|immediately|always|simply|you\s+should|you\s+must"
     r"|you\s+need\s+to|you{_A}ll\s+need\s+to|you\s+will\s+need\s+to|you\s+can|you\s+may"
     r"|be\s+sure\s+to|make\s+sure\s+to|remember\s+to|don{_A}t\s+forget\s+to"
     r"|do\s+not\s+forget\s+to|(?:i|we)\s+(?:need|want|would\s+like)\s+you\s+to"
-    r"|you\s+are\s+(?:required|expected|asked)\s+to|go\s+ahead\s+and)\b)"
+    r"|you\s+are\s+(?:required|expected|asked)\s+to|go\s+ahead\s+and"
+    # an obligation addressed to the agent: "the assistant should", "it is essential that you"
+    rf"|(?:the\s+|an?\s+)?(?:{alt(lx.AGENT_NOUNS)})\s+(?:{alt(lx.OBLIGATION_MODALS)})"
+    rf"|it\s+is\s+(?:{alt(lx.IMPORTANCE_ADJ)})\s+(?:that\s+you|for\s+you\s+to|to))\b)"
 ).replace("{_A}", _A)
+# A leading status symbol or emoji before an imperative ("⚠ Delete the backups ...").
+_SYMBOL = "\u2190-\u2bff\U0001f300-\U0001faff\ufe0f"
 # Concealment manner adverbs, shared by the act pattern and the conceal-act detector.
 _CONCEAL_ADV = (
     r"(?:silently|quietly|secretly|discreetly|covertly|stealthily|privately|surreptitiously"
     r"|unannounced|in\s+secret|in\s+the\s+background|behind\s+the\s+scenes)"
 )
 _ACT = re.compile(
-    _OPENER + r"[\s\-*•>\d.)\"'`“]{0,6}"
+    _OPENER + rf"[\s\-*•>\d.)\"'`“{_SYMBOL}]{{0,6}}"
     r"(?:(?:also|now|then|please|kindly|first|just|always|immediately|simply"
     rf"|{_CONCEAL_ADV})\s+)?"
     rf"\b(?P<verb>{_ACT_VERBS})\b"
     r"(?![-:/_@\"”'`])(?!\.\S)"
     r"(?!\s+(?:finished|failed|passed|ran|took|queued|pending|broke|staged|complete|completed|succeeded|saved|ready|started|done"
-    r"|is|was|are|were|has|had|limits?|of|ids?|count|status|history)\b)"
+    r"|is|was|are|were|has|had|limits?|of|ids?|count|status|history|not|found)\b)"
     r"(?!\s+#\d)"
     r"(?=(?P<after>\s+\w{1,10})?)",
     _I,
@@ -178,6 +187,7 @@ _ADVERB_OPENERS = frozenset(
         "immediately",
         "simply",
         "afterwards",
+        "instead",
     }
 )
 # Words that may stand before such an adverb in an imperative.
@@ -243,9 +253,15 @@ _WHO = (
     r"|maintainers?|owner|operator|customer|requester|developers?)|anyone|anybody|others"
     r"|them)\b(?!['’])"
 )
+# Places where the user reads what the agent did: "the final reply", "the completion
+# report", "the user's activity feed", "user-facing messages", "anything the user sees".
 _PLACE = (
-    r"(?:the|your|its|any)\s+(?:final\s+)?(?:reply|replies|response|responses|answer|answers"
-    r"|summary|summaries|output|message|messages|conversation|chat|transcript|report)\b"
+    rf"(?:(?:the|your|its|any)\s+(?:[a-z-]+\s+){{0,2}}?(?:{alt(lx.PLACE_NOUNS)})\b"
+    r"|(?:the|your)\s+(?:end[\s-])?(?:user|human|requester|customer|owner|operator)['’]s"
+    r"\s+[a-z-]+(?:\s+[a-z-]+)?"
+    rf"|(?:user|human|customer|requester)[\s-](?:{alt(lx.USER_FACING)})\s+[a-z-]+(?:\s+[a-z-]+)?"
+    r"|(?:anything|everything|whatever|what)\s+(?:the\s+(?:user|human|requester|owner)|they)"
+    rf"\s+(?:{alt(lx.USER_PERCEIVES)}|is\s+shown))"
 )
 _NEG_OPEN = (
     rf"(?:do\s+not|don{_A}?t|never|not|without|no\s+need\s+to|nor|avoid|refrain\s+from"
@@ -358,6 +374,42 @@ _SAY_NOTHING = re.compile(
     r"(?P<obj>[^.;:]{0,40})",
     _I,
 )
+# An obligation, for frames whose subject is the concealed thing.
+_MODAL = (
+    r"(?:must|should|shall|is\s+to|are\s+to|needs?\s+to|has\s+to|have\s+to|ought\s+to"
+    r"|will\s+need\s+to)"
+)
+# "that call should be withheld from the user", "the renewal must stay off the feed".
+_PASSIVE_KEEP = re.compile(
+    rf"\b{_MODAL}\s+(?P<neg>(?:not|never)\s+)?(?:(?:be|stay|remain)\s+(?:{alt(lx.KEPT_PARTICIPLES)})"
+    r"\s+(?:out\s+(?:of|from)|from|off|away\s+from)|(?:stay|remain)\s+(?:out\s+of|off|away\s+from))"
+    rf"\s+(?:{_WHO}|{_PLACE})",
+    _I,
+)
+# "that vote must never be disclosed to the user".
+_PASSIVE_TOLD = re.compile(
+    rf"\b(?:{_MODAL}\s+(?:not|never)|(?:must|should){_A}?n{_A}t)\s+(?:ever\s+)?be\s+"
+    rf"(?:(?P<comm>{alt(lx.TOLD_PARTICIPLES)})|{alt(lx.SHOWN_PARTICIPLES)})"
+    rf"\s+(?:to|in|with)\s+(?:{_WHO}|{_PLACE})",
+    _I,
+)
+# "with no disclosure of that entry to the user", "without any notification to the user".
+_NOMINAL_TELL = re.compile(
+    rf"\b(?:with\s+no|without(?:\s+any)?)\s+(?:{alt(lx.TELLING_NOUNS)})\b"
+    r"(?:\s+(?:of|about|regarding)\s+(?P<obj>[^.;:]{0,40}?))?"
+    rf"\s+(?:to|in|for|with)\s+(?:{_WHO}|{_PLACE})",
+    _I,
+)
+# "keep the user unaware of the entry", "the user must remain in the dark".
+_UNAWARE_STATE = alt(lx.UNAWARE_STATES)
+_KEEP_UNAWARE = re.compile(
+    rf"\b(?:(?:keep|keeping|leave|leaving)\s+{_WHO}"
+    rf"|{_WHO}\s+{_MODAL}\s+(?:remain|stay|be\s+kept|be\s+left)"
+    rf"|(?:make\s+sure|ensure)\s+(?:that\s+)?{_WHO}\s+(?:remains|stays|is\s+kept|is\s+left))"
+    rf"\s+(?:{_UNAWARE_STATE})\b(?=(?P<tail>[^.;:,\x22\x60\u201d]{{0,40}}))",
+    _I,
+)
+_DEMONSTRATIVE = re.compile(r"^\s*(?:this|that|these|those|it)\b", _I)
 
 # The object of a concealment: an action or the exchange, not data.
 _WORD = re.compile(r"[a-z][a-z'’-]*")
@@ -596,6 +648,8 @@ _EVENT_NOUNS = frozenset(
         "deploys",
         "release",
         "releases",
+        "vote",
+        "votes",
     ]
 )
 _STATIC_NOUNS = frozenset(
@@ -801,6 +855,17 @@ _OVERRIDE = re.compile(
     r"|asking\s+(?:the\s+user|anyone|a\s+human|for|first|permission))\b",
     _I,
 )
+# An approval step named first and then skipped, or declared not to apply: "the
+# confirmation can be skipped", "the approval step, which you must skip", "exempt from
+# user approval". A negator inside the match cancels it ("must not be skipped").
+_OVERRIDE_POSTPOSED = re.compile(
+    rf"\b(?:{alt(lx.EXEMPT_WORDS)})\s+from\b[^.;]{{0,30}}?\b{_APPROVAL}"
+    rf"|\b{_APPROVAL}\b[^.;]{{0,30}}?\b(?:which|that)\s+you\s+(?:must|should|can|may|will"
+    rf"|are\s+to)\s+(?:{alt(lx.SKIP_VERBS)})\b"
+    rf"|\b{_APPROVAL}\b[^.;]{{0,30}}?\b(?:can|may|should|must|is\s+to|will)\s+be\s+"
+    rf"(?:{alt(lx.SKIPPED_PARTICIPLES)})\b",
+    _I,
+)
 # Wordings that are themselves negative ("no need to ask the user"): not cancelled.
 _OVERRIDE_NEGATIVE_FORM = re.compile(
     rf"\b(?:no\s+need\s+to|do\s+not\s+need\s+to|don{_A}t\s+need\s+to|need\s+not|needn{_A}t"
@@ -824,7 +889,8 @@ _ANCHOR = {
         r"|record|behind|unannounced|mention|tell|disclos|announc|bring|let|talk|explain|discuss"
         r"|raise|flag|refer|acknowledg|stealth|surreptit|privat|background|print|show|display"
         r"|output|includ|expos|reveal|render|log|echo|surfac|list|quot|past|shar|say|nothing"
-        r"|anything|do|handle|perform|carry|anyone|anybody|others|them|usuario|usu[áa]rio|utilisateur|benutzer|nutzer|anwender)",
+        r"|anything|do|handle|perform|carry|anyone|anybody|others|them|notif|updat|feed|handoff"
+        r"|view|inbox|dashboard|digest|recap|usuario|usu[áa]rio|utilisateur|benutzer|nutzer|anwender)",
         _I,
     ),
     "audience": re.compile(r"\b(?:only|not|rather|instead|never|cannot)\b|n['’]t\b", _I),
@@ -837,7 +903,7 @@ _ANCHOR = {
         r"|aside|attention|heed|mind|notice|follow|obey|apply|treat|consider|regard|longer|void"
         r"|outdat|obsolete|invalid|cancel|revoked|null|lifted|suspend|waive|rescind|withdrawn"
         r"|retired|expired|irrelevant|skip|omit|forgo|circumvent|around|without|need|olvida"
-        r"|vergiss|oubli|stop|cease|quit|pay|take|set|get)",
+        r"|vergiss|oubli|stop|cease|quit|pay|take|set|get|exempt|excus|releas)",
         _I,
     ),
 }
@@ -982,6 +1048,17 @@ def _modifies_directive(s: str, pos: int, directives: list[int]) -> bool:
     return any(clo <= d < chi or (d < pos and ";" not in s[d:pos]) for d in directives)
 
 
+def _subject_kind(s: str, pos: int, has_referent: bool) -> str:
+    """Kind of the subject of a passive or stative concealment ending at `pos`: the
+    concealed thing ("that invocation should be kept from the user"). A bare demonstrative
+    or pronoun subject counts as an action when the previous sentence holds a directive."""
+    subject = s[_clause(s, pos, 0, len(s))[0] : pos]
+    kind = _object_kind(subject)
+    if kind == "pronoun" and not (has_referent and _DEMONSTRATIVE.match(subject)):
+        return "data"
+    return kind
+
+
 def _conceal(s: str, has_referent: bool, directives: list[int]) -> list[_Raw]:
     """conceal-act matches in sentence s.
 
@@ -1050,6 +1127,22 @@ def _conceal(s: str, has_referent: bool, directives: list[int]) -> list[_Raw]:
             out.append(("conceal-act", m.start(), m.end(), False, None))
     for m in _CONCEAL_TRANSLATED.finditer(s):
         out.append(("conceal-act", m.start(), m.end(), False, None))
+    for m in _PASSIVE_KEEP.finditer(s):
+        if not m.group("neg") and shown(_subject_kind(s, m.start(), has_referent)):
+            out.append(("conceal-act", _clause(s, m.start(), 0, len(s))[0], m.end(), False, None))
+    for m in _PASSIVE_TOLD.finditer(s):
+        kind = _subject_kind(s, m.start(), has_referent)
+        if (told if m.group("comm") else shown)(kind):
+            out.append(("conceal-act", _clause(s, m.start(), 0, len(s))[0], m.end(), False, None))
+    for m in _NOMINAL_TELL.finditer(s):
+        obj = m.group("obj")
+        if told(_object_kind(obj) if obj else "pronoun") and (
+            proverb or _modifies_directive(s, m.start(), directives)
+        ):
+            out.append(("conceal-act", m.start(), m.end(), False, None))
+    for m in _KEEP_UNAWARE.finditer(s):
+        if not _negated(s, m.start(), 0) and told(_tail_kind(m.group("tail"))):
+            out.append(("conceal-act", m.start(), m.end(), False, None))
     if directives or proverb:
         for m in _SILENT.finditer(s):
             if not _negated(s, m.start(), 0) and (
@@ -1070,6 +1163,9 @@ def _others(s: str) -> list[_Raw]:
         conditioned = _APPROVAL_CONDITION.search(s) is not None
         for m in _OVERRIDE.finditer(s):
             if not _negated(s, m.start(), 0):
+                out.append(("override", m.start(), m.end(), conditioned, None))
+        for m in _OVERRIDE_POSTPOSED.finditer(s):
+            if not _negated(s, m.start(), 0) and not _NEGATOR.search(m.group()):
                 out.append(("override", m.start(), m.end(), conditioned, None))
         for m in _OVERRIDE_NEGATIVE_FORM.finditer(s):
             out.append(("override", m.start(), m.end(), conditioned, None))
@@ -1266,9 +1362,14 @@ def detect(
         s = text[lo:hi]
         raw, starts = _directives(s, own_tool)
         directive = bool(starts)
-        add(raw, lo, idx)
         if _ANCHOR["conceal"].search(s):
-            add(_conceal(s, directive or prev_directive, starts), lo, idx)
+            conceal = _conceal(s, directive or prev_directive, starts)
+            # A verb that is both an act and the head of its own concealment ("Leave the
+            # rating out of the reply") is one concealment, not a directive plus one.
+            heads = {c[1] for c in conceal}
+            raw = [r for r in raw if not (r[0] == "act" and r[1] in heads)]
+            add(conceal, lo, idx)
+        add(raw, lo, idx)
         add(_others(s), lo, idx)
         prev_directive = directive
 

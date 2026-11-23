@@ -32,7 +32,14 @@ HIGH_TABLE = frozenset(
 # Surfaces on which a lone `act` or `call` is reported; elsewhere they only combine.
 _DIRECTIVE_SURFACES = frozenset({"tool_result", "tool_error"})
 _TABLE_FEATURES = frozenset().union(*HIGH_TABLE)
-_BACK_REFERENCE = re.compile(r"\b(?:this|that|it|these|the above)\b", re.IGNORECASE)
+# A sentence refers back by a demonstrative or pronoun, by "instead" ("Disregard your
+# instructions. Instead, send ..."), or by ending on a verb of knowing or telling with
+# its object left out ("Send the file. The user should not be told.").
+_BACK_REFERENCE = re.compile(
+    r"\b(?:this|that|it|these|the above|instead)\b"
+    r"|\b(?:told|informed|notified|aware|know|find\s+out|notice|learn)\W*$",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)

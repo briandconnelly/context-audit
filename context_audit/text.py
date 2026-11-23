@@ -367,6 +367,21 @@ def _shaped(shape: str) -> bool:
     return "9" in shape or any(c != "a" for c in shape.rstrip(":,."))
 
 
+def _status_symbol(c: str) -> bool:
+    return c > "\x7f" and c not in _BULLETS and unicodedata.category(c)[0] == "S"
+
+
+_AFTER_SYMBOL = re.compile(r"[^\w\s]*\s+[A-Z][a-z]")
+
+
+def _lone_symbol_sentence(text: str, a: int, b: int, symbol: list[bool], k: int) -> bool:
+    """A symbol-led line that starts a capitalised sentence and has no symbol-led
+    neighbour is a marked line of prose ("⚠ Delete the backups."), not a status record."""
+    if (k > 0 and symbol[k - 1]) or (k + 1 < len(symbol) and symbol[k + 1]):
+        return False
+    return _AFTER_SYMBOL.match(text, a + 1, b) is not None
+
+
 def _line_spans(n: Normalized) -> list[tuple[int, int]]:
     spans, lo = [], 0
     for i in line_breaks(n):
@@ -389,11 +404,11 @@ def record_lines(n: Normalized) -> list[tuple[int, int]]:
     text = n.text
     lines = _line_spans(n)
     shapes = ["" if _BLOCK_START.match(text, a, b) else _shape(text, a, b) for a, b in lines]
+    symbol = [_status_symbol(text[a]) for a, _ in lines]
     out: list[tuple[int, int]] = []
     for k, (a, b) in enumerate(lines):
-        first = text[a]
         if _RECORD_LEAD.match(text, a, b) or (
-            first > "\x7f" and first not in _BULLETS and unicodedata.category(first)[0] == "S"
+            symbol[k] and not _lone_symbol_sentence(text, a, b, symbol, k)
         ):
             out.append((a, b))
             continue
