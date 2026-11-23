@@ -185,17 +185,17 @@ class _Walk:
         sid = _source_id(kind, str(path))
         self.add(Source(sid, kind, name, path, "discovered", skipped, root=root))
 
-    def entries(self, root: Path, rel: Path) -> list[os.DirEntry[str]]:
+    def entries(self, root: Path, rel: Path, kind: str = "plugin_file") -> list[os.DirEntry[str]]:
         """Entries of root/rel, listed from a handle walked without following symlinks.
 
-        A container reached through a symlink is recorded as skipped.
+        A container reached through a symlink is recorded as skipped, as `kind`.
         """
         try:
             fd = _open_dir(root, rel)
         except (_Absent, FileNotFoundError):
             return []
         except _Skip as e:
-            self.skip("plugin_file", str(rel), root / rel, e.reason)
+            self.skip(kind, str(rel), root / rel, e.reason)
             return []
         try:
             with os.scandir(fd) as it:
@@ -205,19 +205,50 @@ class _Walk:
         finally:
             os.close(fd)
 
-    def subdirs(self, root: Path, rel: Path) -> list[str]:
-        names = []
-        for entry in self.entries(root, rel):
+    def subdirs(self, root: Path, rel: Path, kind: str) -> list[tuple[str, Path]]:
+        """(name, path relative to root) of each subdirectory. A symlinked one is followed
+        only when its target is a directory inside root, and then read by the target's
+        path, still one component at a time without following symlinks; otherwise it is
+        recorded as skipped, as `kind`."""
+        found = []
+        for entry in self.entries(root, rel, kind):
             if entry.is_symlink():
-                self.skip("plugin_file", entry.name, root / rel / entry.name, "symlink-escape")
+                target = _inside(root, root / rel / entry.name)
+                if target is None:
+                    self.skip(kind, entry.name, root / rel / entry.name, "symlink-escape")
+                else:
+                    found.append((entry.name, target))
             elif entry.is_dir(follow_symlinks=False):
-                names.append(entry.name)
-        return names
+                found.append((entry.name, rel / entry.name))
+        return found
+
+
+def _inside(root: Path, link: Path) -> Path | None:
+    """The directory `link` resolves to, relative to root, or None when it is not a
+    directory strictly inside root."""
+    try:
+        real, top = link.resolve(strict=True), root.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not real.is_dir() or real == top or not real.is_relative_to(top):
+        return None
+    return real.relative_to(top)
 
 
 def _skills(walk: _Walk, root: Path, rel: Path) -> None:
-    for name in walk.subdirs(root, rel):
-        walk.file("skill", name, root, rel / name / "SKILL.md")
+    seen: set[Path] = set()
+    for name, path in walk.subdirs(root, rel, "skill"):
+        if path not in seen:
+            seen.add(path)
+            walk.file("skill", name, root, path / "SKILL.md")
+
+
+def _components(walk: _Walk, root: Path, base: Path) -> None:
+    """Commands and agents: the top-level .md files of base/commands and base/agents."""
+    for kind, folder in (("command", "commands"), ("agent", "agents")):
+        for entry in walk.entries(root, base / folder, kind):
+            if entry.name.endswith(".md"):
+                walk.file(kind, entry.name.removesuffix(".md"), root, base / folder / entry.name)
 
 
 def _endpoint(server: dict) -> tuple[str, str]:
@@ -324,10 +355,7 @@ def _hooks(walk: _Walk, root: Path, prel: Path, name: str) -> None:
 def _plugin(walk: _Walk, key: str, root: Path, prel: Path) -> None:
     walk.file("plugin_file", key, root, prel / ".claude-plugin" / "plugin.json")
     _skills(walk, root, prel / "skills")
-    for kind, folder in (("command", "commands"), ("agent", "agents")):
-        for entry in walk.entries(root, prel / folder):
-            if entry.name.endswith(".md"):
-                walk.file(kind, entry.name.removesuffix(".md"), root, prel / folder / entry.name)
+    _components(walk, root, prel)
     _hooks(walk, root, prel, key)
     _mcp_file(walk, root, prel / ".mcp.json", f"plugin:{key}")
     for fname in ("CLAUDE.md", "AGENTS.md"):
@@ -343,7 +371,7 @@ def _plugin_rel(install: str, claude_dir: Path) -> Path | None:
     path = Path(install)
     if not path.is_absolute():
         return None
-    real, top = path.resolve(), claude_dir.resolve()
+    real, top = path.resolve(), claude_dir.resolve()  # ValueError on a NUL: the caller skips
     if not real.is_relative_to(top) or real == top:
         return None
     return real.relative_to(top)
@@ -368,7 +396,11 @@ def _plugins(walk: _Walk, claude_dir: Path) -> None:
             if not isinstance(install, str) or not install:
                 walk.skip("plugin_file", key, None, "malformed", key, str(index))
                 continue
-            prel = _plugin_rel(install, claude_dir)
+            try:
+                prel = _plugin_rel(install, claude_dir)
+            except (ValueError, OSError, RuntimeError):
+                walk.skip("plugin_file", key, None, "malformed", key, str(index))
+                continue
             if prel is None:
                 walk.skip("plugin_file", key, None, "outside-root", key, str(index))
                 continue
@@ -387,12 +419,14 @@ def enumerate_sources(roots: Roots) -> list[Source]:
     try:
         if roots.claude_dir.is_dir():
             _skills(walk, roots.claude_dir, Path("skills"))
+            _components(walk, roots.claude_dir, Path())
             _plugins(walk, roots.claude_dir)
         _mcp_file(
             walk, roots.claude_json.parent, Path(roots.claude_json.name), "user", projects=True
         )
         if roots.project is not None and roots.project.is_dir():
             _skills(walk, roots.project, Path(".claude", "skills"))
+            _components(walk, roots.project, Path(".claude"))
             _mcp_file(walk, roots.project, Path(".mcp.json"), "project")
     except _Full:
         sid = _source_id("plugin_file", "too-many")

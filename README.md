@@ -81,8 +81,10 @@ Count that as its own verdict when you triage.
 
 ## What is covered
 
-- **On disk**, by `scan`: skills, commands, agents, and hook prompts in your Claude Code directory, its plugins, and the project's `.claude/`.
+- **On disk**, by `scan`: skills (`skills/*/SKILL.md`) in your Claude Code directory, its plugins, and the project's `.claude/`; commands and agents (the top-level `.md` files of `commands/` and `agents/`) in the same three places; and prompt hooks in plugins' `hooks/hooks.json`.
+  A symlinked skill directory is scanned when its target stays inside the same root; one that leaves it is skipped, and `scan --json` counts skipped sources by reason.
   Other plugin files and MCP server definitions are counted but not scanned; MCP servers are not started, so their tool descriptions are not scanned.
+- **Not scanned on disk**: a skill's supporting files (anything besides `SKILL.md`, even when it says to read them); hook prompts outside plugins (in `settings.json` files); `agent`-type hooks; commands in nested directories; plugin components at custom paths or declared inline in `plugin.json`; the managed MCP scope (not inventoried); the script paths of command hooks (not recorded); and the keys of JSON objects, on disk or in tool results (only string values are scanned).
 - **During a session**, by the hooks: MCP tool results (`PostToolUse`) and tool errors (`PostToolUseFailure`), for tools matching `mcp__.*`.
   `PreToolUse` only records that a call was requested.
   Non-MCP tool results such as web fetches and file reads are not covered.

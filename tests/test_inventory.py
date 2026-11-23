@@ -384,3 +384,74 @@ def test_malformed_and_relative_plugin_entries(tmp_path):
     sources = enumerate_sources(roots)
     assert [s.skipped for s in sources] == ["malformed", "malformed", "outside-root"]
     assert len({s.source_id for s in sources}) == 3
+
+
+# --- R3: user and project commands and agents ---
+
+
+def test_user_and_project_commands_and_agents_are_enumerated(tmp_path):
+    roots = make_roots(tmp_path)
+    assert roots.project is not None
+    write(roots.claude_dir / "commands" / "uc.md", "user command")
+    write(roots.claude_dir / "agents" / "ua.md", "user agent")
+    write(roots.project / ".claude" / "commands" / "pc.md", CANARY)
+    write(roots.project / ".claude" / "agents" / "pa.md", "project agent")
+    write(roots.project / ".claude" / "commands" / "notes.txt", "not a command")
+    sources = enumerate_sources(roots)
+    assert sorted(s.name for s in by_kind(sources, "command")) == ["pc", "uc"]
+    assert sorted(s.name for s in by_kind(sources, "agent")) == ["pa", "ua"]
+    pc = next(s for s in sources if s.name == "pc")
+    r = scan_fields(read_fields(pc), state_root=tmp_path)
+    assert any(f.severity == "high" for f in r.findings)
+
+
+# --- R4: a symlinked skill that stays inside its root is scanned ---
+
+
+def test_symlinked_skill_inside_its_root_is_scanned(tmp_path):
+    roots = make_roots(tmp_path)
+    write(roots.claude_dir / "repo" / "mine" / "SKILL.md", skill("mine desc", CANARY))
+    (roots.claude_dir / "skills").mkdir()
+    os.symlink(roots.claude_dir / "repo" / "mine", roots.claude_dir / "skills" / "mine")
+    (s,) = by_kind(enumerate_sources(roots), "skill")
+    assert (s.name, s.skipped) == ("mine", "")
+    assert any(
+        f.severity == "high" for f in scan_fields(read_fields(s), state_root=tmp_path).findings
+    )
+
+
+def test_escaping_skill_symlink_is_labelled_a_skill(tmp_path):
+    roots = make_roots(tmp_path)
+    write(tmp_path / "outside" / "evil" / "SKILL.md", CANARY)
+    (roots.claude_dir / "skills").mkdir()
+    os.symlink(tmp_path / "outside" / "evil", roots.claude_dir / "skills" / "evil")
+    (s,) = enumerate_sources(roots)
+    assert (s.kind, s.skipped) == ("skill", "symlink-escape")
+
+
+def test_report_breaks_skipped_down_by_reason(tmp_path):
+    from context_audit.inventory import SKIP_REASONS
+    from context_audit.report import source_counts
+
+    roots = make_roots(tmp_path)
+    write(tmp_path / "outside" / "evil" / "SKILL.md", CANARY)
+    (roots.claude_dir / "skills").mkdir()
+    os.symlink(tmp_path / "outside" / "evil", roots.claude_dir / "skills" / "evil")
+    counts = source_counts(enumerate_sources(roots))
+    assert counts["skipped"] == 1
+    assert set(counts["skipped_by_reason"]) == set(SKIP_REASONS)
+    assert counts["skipped_by_reason"]["symlink-escape"] == 1
+
+
+# --- F7: a malformed installPath is skipped, not fatal ---
+
+
+def test_install_path_with_nul_is_skipped_and_enumeration_continues(tmp_path):
+    roots = make_roots(tmp_path)
+    write(roots.claude_dir / "skills" / "u" / "SKILL.md", skill("d", "b"))
+    reg = roots.claude_dir / "plugins" / "installed_plugins.json"
+    bad = {"version": 2, "plugins": {"bad@mk": [{"installPath": str(roots.claude_dir) + "/a\0b"}]}}
+    write(reg, json.dumps(bad))
+    sources = enumerate_sources(roots)
+    assert [s.name for s in by_kind(sources, "skill")] == ["u"]
+    assert any(s.name == "bad@mk" and s.skipped == "malformed" for s in sources)

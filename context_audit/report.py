@@ -13,7 +13,7 @@ import unicodedata
 from collections.abc import Iterable, Mapping
 
 from context_audit.features import FEATURES
-from context_audit.inventory import Source
+from context_audit.inventory import SKIP_REASONS, Source
 from context_audit.rules import Finding
 from context_audit.selftest import SelfTest
 from context_audit.state import COUNTER_NAMES
@@ -126,11 +126,14 @@ def source_counts(sources: Iterable[Source], outcomes: Mapping[str, str] | None 
     """Source counts. With `outcomes` (source_id to "complete", "partial" or "unreadable",
     from a scan), a readable source counts as scanned only when its scan was complete;
     without it (no scan ran), readable sources count as scanned."""
-    counts = {"scanned": 0, "partly_scanned": 0, "unreadable": 0, "skipped": 0,
-              "mcp_servers_not_listed": 0}  # fmt: skip
+    by_reason = dict.fromkeys(sorted(SKIP_REASONS), 0)
+    counts: dict = {"scanned": 0, "partly_scanned": 0, "unreadable": 0, "skipped": 0,
+                    "skipped_by_reason": by_reason, "mcp_servers_not_listed": 0}  # fmt: skip
     for s in sources:
         if s.skipped:
             counts["skipped"] += 1
+            if s.skipped in by_reason:
+                by_reason[s.skipped] += 1
         elif s.kind == "mcp_server":
             counts["mcp_servers_not_listed"] += 1
         elif s.kind in READ_KINDS:
