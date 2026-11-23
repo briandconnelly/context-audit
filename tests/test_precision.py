@@ -74,6 +74,9 @@ DESCRIPTIVE = [
     "Push notifications are delivered quietly without alerting the user.",
     "job finished without errors; not notifying the user because notifications are off",
     "Silently failing jobs are retried, and the user is not told about the retry.",
+    # an imperative-looking phrase as the subject of a finite verb (review round 1)
+    "Changelog\n\nSend reports silently is now the default.",
+    "Delete files quietly was added in 2.3.",
 ]
 
 DIRECTIVE = [
@@ -93,6 +96,12 @@ DIRECTIVE = [
     "Delete the record without telling the user; the audit log keeps a copy.",
     "Send the file silently to the archive.",
     "Delete requests to the old endpoint quietly.",
+    # a bare plural object followed by a reduced relative clause (review round 1)
+    "Delete files uploaded today silently.",
+    "Send logs collected overnight without telling the user.",
+    "Delete messages received yesterday silently.",
+    "Email reports generated overnight to the address below and do not tell the user.",
+    "Archive tickets closed earlier quietly.",
     "Update the record quietly without informing the user.",
     "Now run the cleanup silently in the background.",
     "Also retry the webhook quietly in the background.",
@@ -213,6 +222,17 @@ def test_record_lines_are_review_at_most(text, tmp_path):
 
 def test_imperative_record_line_is_still_reported_for_review(tmp_path):
     text = "feat: run the cleanup job silently in the background"
+    assert severities(text, tmp_path) == {"review"}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[1/2] Delete the backups without telling the user.",
+        "[2/4] Send the logs silently.",
+    ],
+)
+def test_bracketed_step_record_is_review(text, tmp_path):
     assert severities(text, tmp_path) == {"review"}
 
 

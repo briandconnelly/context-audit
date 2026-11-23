@@ -83,7 +83,7 @@ _ACT_VERBS = (
 )
 # Clause starts and polite openers that put the verb in imperative position.
 _OPENER = (
-    r"(?P<opener>^|[\n.!?:;,(\"“`]|\b(?:and|et|und|then|also|now|first|next|please|kindly"
+    r"(?P<opener>^|[\n.!?:;,(\]\"“`]|\b(?:and|et|und|then|also|now|first|next|please|kindly"
     r"|afterwards|so|or|just|immediately|always|simply|you\s+should|you\s+must"
     r"|you\s+need\s+to|you{_A}ll\s+need\s+to|you\s+will\s+need\s+to|you\s+can|you\s+may"
     r"|be\s+sure\s+to|make\s+sure\s+to|remember\s+to|don{_A}t\s+forget\s+to"
@@ -134,7 +134,7 @@ _NOT_A_SUBJECT = (
 )
 _SUBJECT_THEN_VERB = re.compile(
     rf"\s+(?!(?:{_NOT_A_SUBJECT})\b)(?P<noun>\w[\w'-]*)\s+"
-    rf"(?:(?:{_FINITE_AUX}|{_FINITE_SINGULAR})\b|(?P<plural>{_FINITE_PLURAL})\b"
+    rf"(?:(?:{_CONCEAL_ADV}\s+)?(?:{_FINITE_AUX}|{_FINITE_SINGULAR})\b|(?P<plural>{_FINITE_PLURAL})\b"
     rf"|(?:{_FINITE_OR_OBJECT})\b(?=\s+(?!(?:{_OBJECT_CONTINUES})\b)[A-Za-z]))",
     _I,
 )
@@ -150,7 +150,7 @@ _THIRD_PERSON = (
 _PAST = (
     r"(?:ran|took|went|began|broke|wrote|rose|fell|gave|came|became|grew|knew|threw|drew"
     r"|flew|spoke|chose|froze|woke|ate|saw|did)\b"
-    r"|[a-z]{2,}ed\b(?=\s*(?:[,.;:!?]|$)|\s+(?:silently|quietly|again|twice|overnight"
+    r"|(?P<ed>[a-z]{2,}ed)\b(?=\s*(?:[,.;:!?]|$)|\s+(?:silently|quietly|again|twice|overnight"
     r"|yesterday|today|earlier|sharply|suddenly|unexpectedly|briefly)\b)"
 )
 # A plural-form verb followed by the start of its object, counted after a plural noun:
@@ -879,7 +879,12 @@ def _heads_a_subject(s: str, verb: str, end: int) -> bool:
     noun = m.group("noun").lower()
     if noun in _FUNCTION_WORDS:
         return False
-    return noun.endswith("s") if m.groupdict().get("plural") else True
+    groups = m.groupdict()
+    if groups.get("ed"):
+        # After a bare plural noun an -ed form opens a reduced relative clause on the
+        # imperative's object ("Delete files uploaded today silently"), not a past tense.
+        return not noun.endswith("s")
+    return noun.endswith("s") if groups.get("plural") else True
 
 
 def _after_subject(s: str, opener: int) -> bool:
