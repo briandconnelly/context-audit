@@ -885,9 +885,30 @@ _OVERRIDE_NEGATIVE_FORM = re.compile(
     r"[^.;]{0,20}?\b(?:user|approval|confirmation|permission|consent|sign-?off)\b",
     _I,
 )
+# The user's own approval, request or instruction, by form: a conditional or temporal
+# clause whose subject is the user (or "they", the requester, the operator) with a verb of
+# approving, asking, requesting, confirming, opting, choosing, enabling or instructing, in
+# either order relative to the override; its passive ("once approved by the user", "when
+# explicitly requested"); or a directive to ask or confirm with the user.
+_USER_SUBJECT = (
+    r"(?:(?:the|a|your)\s+)?(?:user|users|requester|operator|owner|customer|human)s?|they"
+)
+_APPROVING = (
+    r"(?:approv|ask|request|confirm|opt|choos|chose|select|enabl|instruct|agree|consent"
+    r"|authori[sz]|allow|permit|want|said\s+yes|passed\s+--?yes)\w*"
+)
+_CONDITION_OPEN = (
+    r"(?:if|when|whenever|once|since|after|unless|until|provided(?:\s+that)?"
+    r"|as\s+long\s+as)"
+)
 _APPROVAL_CONDITION = re.compile(
-    r"\b(?:if|when|once|since|after|unless)\b[^.;]{0,40}?\buser\b[^.;]{0,30}?"
-    r"\b(?:approved|approves|confirmed|confirms|agreed|consented|passed\s+--?yes|said\s+yes)\b",
+    rf"\b{_CONDITION_OPEN}\s+(?:[\w'’-]+\s+){{0,3}}?{_USER_SUBJECT}\b"
+    rf"(?:\s+[\w'’-]+){{0,3}}?\s+{_APPROVING}\b"
+    rf"|\b{_CONDITION_OPEN}\s+(?:(?:explicitly|expressly|specifically|already)\s+)?"
+    r"(?:approved|requested|confirmed|instructed|asked\s+for|enabled|chosen|selected"
+    r"|authori[sz]ed|allowed)\b"
+    r"|(?:^|[,;:]\s*|\b(?:and|then|please)\s+)(?:ask|confirm\s+with|check\s+with)\s+"
+    r"(?:the\s+)?(?:user|them|requester|operator)\b",
     _I,
 )
 
@@ -1018,18 +1039,19 @@ def _act_heads(s: str) -> Iterator[re.Match[str]]:
 
 def _directives(
     s: str, own_tool: str | None, fragment: Callable[[int], bool] | None = None
-) -> tuple[list[_Raw], list[int]]:
+) -> tuple[list[_Raw], list[int], set[int]]:
     """act and call matches in sentence s (sentence-relative), and the start of every act
     and call found, including those absorbed into a call or naming the field's own tool.
 
     `fragment(pos)` says whether the word at pos begins right after removed characters
     (a control or escape sequence): the rest of a word, not a word, so it is not taken as
-    an open-class imperative."""
+    an open-class imperative. The third value holds the starts of open-class acts."""
 
     def neg(start: int) -> bool:
         return _negated(s, start, 0)
 
     acts: list[tuple[int, int]] = []
+    open_starts: set[int] = set()
     for m in _act_heads(s):
         known = m.group("verb") is not None
         head = "verb" if known else "open"
@@ -1046,6 +1068,8 @@ def _directives(
             continue
         if not neg(v):
             acts.append((v, _clause(s, v, 0, len(s))[1]))
+            if not known:
+                open_starts.add(v)
     acts.sort()
     act_starts = [a for a, _ in acts]
 
@@ -1075,7 +1099,8 @@ def _directives(
         absorbed.update(act_starts[bisect_left(act_starts, clo) : bisect_left(act_starts, chi)])
     out: list[_Raw] = [("call", a, b, False, t) for a, b, t in calls if t != own_tool]
     out.extend(("act", a, b, False, None) for a, b in acts if a not in absorbed)
-    return out, sorted([a for a, _ in acts] + [c for c, _, _ in calls])
+    open_starts.intersection_update(a for a, _ in acts)
+    return out, sorted([a for a, _ in acts] + [c for c, _, _ in calls]), open_starts
 
 
 # A manner phrase led by a negated gerund: "without telling the user", "not notifying".
@@ -1125,7 +1150,9 @@ def _subject_kind(s: str, pos: int, has_referent: bool) -> str:
     return kind
 
 
-def _conceal(s: str, has_referent: bool, directives: list[int]) -> list[_Raw]:
+def _conceal(
+    s: str, has_referent: bool, directives: list[int], listed: list[int] | None = None
+) -> list[_Raw]:
     """conceal-act matches in sentence s.
 
     Communication verbs (tell, mention, the awareness verbs) conceal anything but a plain
@@ -1180,6 +1207,8 @@ def _conceal(s: str, has_referent: bool, directives: list[int]) -> list[_Raw]:
         if told(_tail_kind(m.group("tail"))):
             add(m)
     for m in _UNAWARE.finditer(s):
+        if proximity.after_subordinator(s, m.start()):
+            continue  # "so the user never sees ...": a purpose or reason, not a directive
         if told(_tail_kind(m.group("tail") or m.group("tail2") or "")):
             out.append(("conceal-act", m.start(), m.end(), False, None))
     for m in _KEEP_FROM.finditer(s):
@@ -1206,16 +1235,48 @@ def _conceal(s: str, has_referent: bool, directives: list[int]) -> list[_Raw]:
         if not _negated(s, m.start(), 0) and told(_tail_kind(m.group("tail"))):
             out.append(("conceal-act", m.start(), m.end(), False, None))
     _conceal_by_proximity(s, has_referent, directives, proverb, out, add_span)
-    if directives or proverb:
+    # Withholding data keeps precedence through a pronoun: "Mask the card number in logs
+    # and never display it to anyone": "it" is the nearest noun phrase before it.
+    out = [o for o in out if not _pronoun_for_data(s, o[1], o[2])]
+    # A manner adverb alone is weak evidence: it needs a listed verb or a call, not an
+    # open-class head ("Refresh the token quietly when it expires").
+    strong = directives if listed is None else listed
+    if strong or proverb:
         for m in _SILENT.finditer(s):
             if not _negated(s, m.start(), 0) and (
-                proverb or _modifies_directive(s, m.start(), directives)
+                proverb or _modifies_directive(s, m.start(), strong)
             ):
                 out.append(("conceal-act", m.start(), m.end(), False, None))
     return out
 
 
 _MANNER_CUE = re.compile(r"(?:without|with\s+no)\b", _I)
+
+
+# The spec's withheld data ("a secret, token, key, password, credential, personal
+# data"): what a pronoun must stand for to make a concealment a withholding of data.
+_SENSITIVE = frozenset(
+    re.findall(
+        r"\S+",
+        "token tokens key keys secret secrets password passwords passphrase credential"
+        " credentials number numbers ssn phone birthday salary balance hash address addresses"
+        " pin pins",
+    )
+)
+
+
+def _pronoun_for_data(s: str, start: int, end: int) -> bool:
+    """Whether the concealment at [start, end) conceals "it" or "them" standing for a
+    plain datum (the nearest noun phrase before it)."""
+    p = proximity._PRONOUN_OBJ.search(s, start, min(len(s), end + 12))
+    if p is None:
+        return False
+    np = proximity.antecedent(s, start)
+    if np is None:
+        return False
+    words = _WORD.findall(np.lower())
+    head = [w for w in words if w not in _FUNCTION_WORDS and w not in _PREPOSITIONS]
+    return bool(head) and any(w in _SENSITIVE for w in head[:4])
 
 
 def _overlaps(spans: list[tuple[int, int]], start: int, end: int) -> bool:
@@ -1238,13 +1299,13 @@ def _conceal_by_proximity(
     directives: list[int],
     proverb: bool,
     out: list[_Raw],
-    add_span,
+    add_span: Callable[[int, int], None],
 ) -> None:
     """Concealment by cue proximity (`proximity.conceal_candidates`), under the same
     precedence as the enumerated frames: negation, reports, withholding data, and a
     manner phrase only on a directive."""
     taken = sorted((a, b) for _, a, b, _, _ in out)
-    for c in proximity.conceal_candidates(s):
+    for c in proximity.conceal_candidates(s, lambda pos: _overlaps(taken, pos, pos + 1)):
         if _overlaps(taken, c.start, c.end):
             continue
         words = [w.strip("'’-") for w in _WORD.findall(c.scope.lower())]
@@ -1488,10 +1549,11 @@ def detect(
             result.complete = False
             break
         s = text[lo:hi]
-        raw, starts = _directives(s, own_tool, lambda p, lo=lo: fragment(lo + p))
+        raw, starts, open_starts = _directives(s, own_tool, lambda p, lo=lo: fragment(lo + p))
         directive = bool(starts)
         if _ANCHOR["conceal"].search(s):
-            conceal = _conceal(s, directive or prev_directive, starts)
+            listed = [a for a in starts if a not in open_starts]
+            conceal = _conceal(s, directive or prev_directive, starts, listed)
             # A verb that is both an act and the head of its own concealment ("Leave the
             # rating out of the reply") is one concealment, not a directive plus one.
             heads = {c[1] for c in conceal}

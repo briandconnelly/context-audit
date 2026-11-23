@@ -99,6 +99,10 @@ def scan_fields(
         merged = {i: alt_matches.get(i, m) for i, m in matches.items()}
         if any(merged.values()):
             findings = _merge_alternate(findings, judge(fields, merged, state_root))
+    # The budget holds through judging too: a scan that ran past its deadline is never
+    # reported complete, whatever step overran.
+    if not reason and time.monotonic() > deadline:
+        reason = "time-budget"
     outcome = "partial" if reason else "complete"
     return ScanResult(tuple(findings), outcome, reason, len(scanned))
 

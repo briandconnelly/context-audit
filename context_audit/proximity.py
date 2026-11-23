@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import re
 from bisect import bisect_left
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from context_audit import lexicon as lx
@@ -26,7 +27,69 @@ from context_audit.lexicon import alt
 _I = re.IGNORECASE
 _SPAN = 90  # characters after a cue in which its partner must appear (about 12 words)
 _WORDS = re.compile(r"[A-Za-z][\w'’-]*")
-_STOP = re.compile(r"[.;!?]")
+# The end of a cue's clause: a cue pairs with its target only inside one clause.
+_SUBORDINATORS = (
+    r"so(?:\s+that|\s+as)?|then|when|whenever|while|if|because|unless|until|although"
+    r"|though|since|whereas|once|after|before"
+)
+# A clause about the agent's own telling ("when you answer the user") is where the user
+# would be told, so it does not end the window.
+_STOP = re.compile(
+    rf"[.;:!?]|,\s*(?:and|but|or|nor|yet)\b"
+    rf"|,?\s*\b(?:{_SUBORDINATORS})\b(?!\s+you\b)",
+    re.I,
+)
+# The start of a subordinate clause before a cue: "so the user never sees ...".
+_SUBORDINATE_OPEN = re.compile(rf"\b(?:{_SUBORDINATORS})\b", re.I)
+_CLAUSE_OPEN = re.compile(rf"[,.;:!?\n]|\b(?:and|but|or|{_SUBORDINATORS})\b", re.I)
+# A purpose infinitive before a cue: "Set `quiet=true` to suppress the message".
+_PURPOSE_TO = re.compile(
+    r"(?<!\bneed\s)(?<!\bhave\s)(?<!\bhas\s)(?<!\bhad\s)(?<!\bought\s)(?<!\bgot\s)"
+    r"(?<!\bwant\s)(?<!\bare\s)(?<!\bis\s)(?<!\bam\s)(?<!\bbe\s)(?<!\bable\s)"
+    r"\bto\s+$",
+    re.I,
+)
+
+
+def after_subordinator(s: str, pos: int) -> bool:
+    """Whether the clause holding pos opens with a subordinator ("so the user does not
+    notice ..."): a clause with its own subject, not a directive."""
+    opens = list(_CLAUSE_OPEN.finditer(s, max(0, pos - 80), pos))
+    return bool(opens) and _SUBORDINATE_OPEN.fullmatch(opens[-1].group()) is not None
+
+
+_PRONOUN_OBJ = re.compile(r"\b(?:it|them)\b", re.I)
+_DETERMINER = re.compile(
+    r"\b(?:the|a|an|this|that|these|those|your|its|their|any|each|all)\s", re.I
+)
+_NP_END = re.compile(r"[,;:]|\b(?:and|or|but|then|so|to|never|not|do|don['’]t)\b", re.I)
+
+
+def antecedent(s: str, pos: int) -> str | None:
+    """The nearest noun phrase before pos in the sentence, from its determiner to the
+    first conjunction, comma or negator: what "it" or "them" at pos stands for."""
+    dets = list(_DETERMINER.finditer(s, max(0, pos - 120), pos))
+    if not dets:
+        return None
+    a = dets[-1].start()
+    end = _NP_END.search(s, dets[-1].end(), pos)
+    return s[a : end.start() if end else pos]
+
+
+def in_subordinate_clause(s: str, pos: int) -> bool:
+    """Whether pos lies in a subordinate clause with a subject of its own ("so the user
+    never sees ...", "when it expires"), or after a purpose "to": not a directive."""
+    lo = max(0, pos - 80)
+    if _PURPOSE_TO.search(s, lo, pos):
+        return True
+    opens = list(_CLAUSE_OPEN.finditer(s, lo, pos))
+    if not opens:
+        return False
+    last = opens[-1]
+    if not _SUBORDINATE_OPEN.fullmatch(last.group()):
+        return False
+    return bool(s[last.end() : pos].strip())
+
 
 # --- concealment -----------------------------------------------------------------------
 
@@ -175,8 +238,23 @@ class _Index:
         return None
 
 
-def conceal_candidates(s: str) -> list[Candidate]:
-    """Concealment candidates in sentence s, with the concealed object's words."""
+class _Direct:
+    """A search per lookup: cheaper than an index for a short sentence."""
+
+    def __init__(self, pattern: re.Pattern[str], s: str) -> None:
+        self.pattern, self.s = pattern, s
+
+    def first(self, lo: int, hi: int) -> re.Match[str] | None:
+        return self.pattern.search(self.s, lo, hi)
+
+
+_SHORT = 400  # characters: below this a sentence is searched directly, not indexed
+
+
+def conceal_candidates(s: str, taken: Callable[[int], bool] | None = None) -> list[Candidate]:
+    """Concealment candidates in sentence s, with the concealed object's words.
+    `taken(pos)` says whether a cue at pos is already inside a concealment found by an
+    enumerated frame; such a cue is skipped before any partner lookup."""
     out: list[Candidate] = []
     if not _has_any(s, _CONCEAL_STEMS):
         return out
@@ -185,16 +263,19 @@ def conceal_candidates(s: str) -> list[Candidate]:
     cues = list(_CONCEAL_CUE.finditer(s))
     if not cues:
         return out
-    lazy: dict[re.Pattern[str], _Index] = {}
+    lazy: dict[re.Pattern[str], _Index | _Direct] = {}
+    kind = _Direct if len(s) < _SHORT else _Index
 
-    def index(p: re.Pattern[str]) -> _Index:
+    def index(p: re.Pattern[str]) -> _Index | _Direct:
         if p not in lazy:
-            lazy[p] = _Index(p, s)
+            lazy[p] = kind(p, s)
         return lazy[p]
 
     if _REF.search(s) is None and not any(m.group("strong") for m in cues):
         return out  # a negator or weak cue needs the user or a place
     for m in cues:
+        if (taken is not None and taken(m.start())) or in_subordinate_clause(s, m.start()):
+            continue
         # A partner may sit inside a split cue: "keep the user out", "leave that out".
         verb = _WORDS.match(s, m.start())
         lo = verb.end() if verb else m.end()
@@ -287,6 +368,10 @@ def override_candidates(s: str) -> list[tuple[int, int]]:
         return out
     stops = _Index(_STOP, s)
     for m in _OVERRIDE_CUE.finditer(s):
+        if in_subordinate_clause(s, m.start()) and not m.group().lower().startswith(
+            ("even", "regardless", "in place", "instead", "no need", "take")
+        ):
+            continue
         limit = min(len(s), m.end() + _SPAN)
         stop = stops.first(m.end(), limit)
         t = targets.first(m.end(), stop.start() if stop else limit)

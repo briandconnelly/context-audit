@@ -48,9 +48,11 @@ _CLOSED = _words(
     # numbers
     " zero two three four five six seven eight nine ten hundred thousand million"
 )
-# Common sentence-initial nouns and adjectives that are not verbs ("Note the ...",
-# "Summary of ..."). Grown from the benign generator and the controls, never from the
-# development set.
+# Sentence-initial nouns and adjectives that are not verbs ("Note the ...", "Summary of
+# ..."). Source: the brief's examples, written from general knowledge of headings and
+# labels before any measurement, then "see"/"refer" for the Task 15 R4 test ("See the
+# section titled ...") and the description labels for the Task 16b review probe
+# ("Parameter `skip_confirm`: ..."). Nothing was taken from the development set.
 STOPLIST = _words(
     "note notes warning warnings error errors result results status summary example examples"
     " version versions total totals details detail info information tip tips hint hints usage"
@@ -62,9 +64,15 @@ STOPLIST = _words(
     " true false null none yes good nice cool"
     # cross-references, not actions: "See the section ...", "Refer to the guide"
     " see refer"
-    # concealment and override cues: their own detectors judge them, and as a bare act
-    # they would make a lone concealment refer to itself ("Keep it out of the reply")
-    " keep hide conceal suppress withhold omit exclude avoid refrain skip ignore disregard"
+    # labels in tool and parameter descriptions: "Parameter `x`: ...", "Option `y` ..."
+    " parameter parameters option options argument arguments property properties variable"
+    " variables attribute attributes setting settings header headers"
+)
+# Concealment and override cue verbs. Not a vocabulary finding: a detector rule. Their own
+# detectors judge them, and as a bare act a cue would make a lone concealment refer to
+# itself ("Keep it out of the reply").
+CUE_VERBS = _words(
+    "keep hide conceal suppress withhold omit exclude avoid refrain skip ignore disregard"
     " forget override supersede bypass waive dispense"
 )
 # Irregular past forms, which carry no -ed ending: "Sent the file to ...".
@@ -109,7 +117,7 @@ def imperative_head(
     if word[0].isupper() and not sentence_start:
         return False  # a proper noun after a comma or conjunction
     w = word.lower()
-    if w in _CLOSED or w in STOPLIST or w in _IRREGULAR_PAST or len(w) < 3:
+    if w in _CLOSED or w in STOPLIST or w in CUE_VERBS or w in _IRREGULAR_PAST or len(w) < 3:
         return False
     if w.endswith(("ed", "ing", "ly")) and not w.endswith("eed"):
         return False  # past, progressive or adverb

@@ -318,11 +318,21 @@ def test_matches_carry_sentence_index_and_span():
     ],
 )
 def test_detectors_are_linear(unit):
-    f = Field("s", "tool_result", "x", unit * 50_000)
-    n = normalize(f)
-    t = time.perf_counter()
-    detect(f, n)
-    assert time.perf_counter() - t < 1.0
+    # A ratio, not an absolute limit, so it tests linearity and not this machine: twice
+    # the input costs at most about 2.6 times as much (best of three each; a small slack
+    # covers timer noise on units that cost almost nothing).
+    def cost(reps: int) -> float:
+        f = Field("s", "tool_result", "x", unit * reps)
+        n = normalize(f)
+        best = float("inf")
+        for _ in range(3):
+            t = time.perf_counter()
+            detect(f, n)
+            best = min(best, time.perf_counter() - t)
+        return best
+
+    small, large = cost(25_000), cost(50_000)
+    assert large <= 2.6 * small + 0.02
 
 
 def test_dense_matches_scale_linearly():
