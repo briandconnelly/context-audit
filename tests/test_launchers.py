@@ -206,3 +206,16 @@ def test_cli_launcher_tries_a_later_copy_of_the_same_name(tmp_path):
         timeout=30,
     )
     assert p.stdout.splitlines() == ["second"]
+
+
+@pytest.mark.parametrize("body", ["exit 127", "exit 1", "kill -9 $$"])
+def test_hook_launcher_falls_through_a_broken_interpreter(tmp_path, body):
+    # I1: a shim that cannot run (pyenv/asdf exit 127) must not silence the hook.
+    impostor(tmp_path, "python3.15", body)
+    link(tmp_path, "python3", sys.executable)
+    home = tmp_path / "state"
+    p = launch(
+        HOOK_LAUNCHER, tmp_path, stdin=json.dumps(event(text=CANARY)), CONTEXT_AUDIT_HOME=str(home)
+    )
+    assert p.returncode == 0
+    assert "systemMessage" in json.loads(p.stdout)

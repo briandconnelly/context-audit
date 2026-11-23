@@ -5,8 +5,11 @@ case $0 in
 */*) here=${0%/*} ;;
 *) here=. ;;
 esac
+# Each candidate must start and exit 0 (-S: without site, so the check is cheap); a shim that
+# cannot run, such as a pyenv shim for a version not selected, falls through to the next.
+# The version is not checked here: hook.py tells the owner when it is too old.
 for py in python3.15 python3.14 python3.13 python3; do
-  if command -v "$py" >/dev/null 2>&1; then
+  if command -v "$py" >/dev/null 2>&1 && "$py" -I -S -c '' </dev/null >/dev/null 2>&1; then
     exec "$py" -I "$here/../context_audit/hook.py" "$@"
   fi
 done
