@@ -105,6 +105,7 @@ Auto mode is the interactive default, so unless it is probed, rely on `scan` and
 
 The release gates were measured on 2026-11-23; the figures, tables, and caveats are in `docs/research/2026-11-23-slice-1-gates-round-2.md`.
 
+- On the owner's real installation of 120 skills, commands and agents, the first scan produced 14 high findings and all 14 were false; after the fix for those classes it produces none ([estate run](docs/research/2026-11-23-estate-run.md)).
 - Recall on an independently written held-out set is 53 of 60 directives (88%).
   Two other sets of unseen directives gave 55% and 67%, so recall depends heavily on who wrote the text, and 88% is the top of the observed range.
 - On the project's own 150 controls and 1,000 generated benign results there is no high finding.
