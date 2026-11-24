@@ -23,6 +23,7 @@ uv run pytest -q && uv run ruff check . && uv run ruff format --check . && uv ru
 The same checks, plus file hygiene, shellcheck, actionlint and zizmor, run as [prek](https://github.com/j178/prek) hooks; CI runs them on every pull request.
 Install [prek](https://github.com/j178/prek) (`uv tool install prek`) and `shellcheck`, then run `prek install` to check staged files at each commit, or `prek run --all-files` to check everything.
 The ruff hooks apply fixes. In CI, pytest prints no tracebacks, so held-out text never reaches the log; rerun a failing test locally to see why.
+CI runs on Linux and deselects `perf` tests (wall-clock budgets); tests that launch the probe sandbox skip without macOS `sandbox-exec`. Run the full suite on a Mac before release.
 
 For any change to `context_audit/`, `hooks/`, `bin/`, or `evaluation/`, also run the release gates (see [evaluation/README.md](evaluation/README.md)):
 
