@@ -1,7 +1,7 @@
 # Slice 1 checkpoint
 
 Slice 1 is used warn-only in ordinary work, and the trial decides whether slice 2 is built.
-The rule for the checkpoint is in the spec, `docs/superpowers/specs/2026-11-22-third-party-context-audit-design.md`, section Checkpoint; this page is the owner's procedure for it.
+The rule for the checkpoint is in the design spec's Checkpoint section (not tracked in this repo); this page is the owner's procedure for it.
 
 ## Before starting
 

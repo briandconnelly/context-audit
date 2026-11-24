@@ -2,7 +2,7 @@
 
 This directory holds the frozen corpus that the scanner's detectors are judged against.
 It is dev-only: it is not shipped in the package, and it uses the Python standard library only.
-The labelling standard is the `## Definition` section of `docs/superpowers/specs/2026-11-22-third-party-context-audit-design.md`; every label here follows it.
+The labelling standard is the `## Definition` section of the design spec (not tracked in this repo); every label here follows it.
 
 After the freeze commit, a corpus file changes only by a commit whose message begins `corpus:` and states why.
 

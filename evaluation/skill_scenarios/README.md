@@ -1,7 +1,7 @@
 # Audit skill scenarios
 
 The audit skill, `skills/auditing-third-party-context/SKILL.md`, is model-executed, so it is tested in real model sessions.
-The test's requirements are in the spec, `docs/superpowers/specs/2026-11-22-third-party-context-audit-design.md`, section Evaluation.
+The test's requirements are in the design spec's Evaluation section (not tracked in this repo).
 
 **Status: not run.**
 These scenarios cost model quota and are owed on the owner's yes.

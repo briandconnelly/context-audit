@@ -1,8 +1,36 @@
-.venv/
+# Python
 __pycache__/
-runs/
-.superpowers/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Environments
+.venv/
+.env
+.env.*
+.envrc
+
+# Tool caches
 .pytest_cache/
 .ruff_cache/
-.envrc
-.env
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Project outputs
+runs/
+
+# Agent tooling (local installs and settings)
+.superpowers/
+docs/superpowers/
+.agents/
+.claude/skills
+.claude/settings.local.json
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+*.swp
