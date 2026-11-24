@@ -338,7 +338,20 @@ UNREADABLE = {
 }
 
 
-def run_bytes(home: Path, data: bytes) -> subprocess.CompletedProcess:
+def _default_stack() -> None:
+    # CPython 3.14 sizes its recursion guard from the real stack, so whether deep JSON
+    # overflows depends on the host's limit (GitHub's Linux runners allow more than 8 MiB).
+    # Pin the common 8 MiB default so the unreadable-event path is exercised everywhere.
+    import resource
+
+    _, hard = resource.getrlimit(resource.RLIMIT_STACK)
+    soft = 8 * 1024 * 1024
+    if hard != resource.RLIM_INFINITY:
+        soft = min(soft, hard)
+    resource.setrlimit(resource.RLIMIT_STACK, (soft, hard))
+
+
+def run_bytes(home: Path, data: bytes, default_stack: bool = False) -> subprocess.CompletedProcess:
     env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
     env["CONTEXT_AUDIT_HOME"] = str(home)
     return subprocess.run(
@@ -348,6 +361,7 @@ def run_bytes(home: Path, data: bytes) -> subprocess.CompletedProcess:
         env=env,
         cwd=home.parent,
         timeout=60,
+        preexec_fn=_default_stack if default_stack else None,
     )
 
 
@@ -367,7 +381,7 @@ def test_deeply_nested_result_event_is_counted_and_reported(tmp_path):
     home = tmp_path / "state"
     head = '{"hook_event_name": "PostToolUse", "session_id": "s", "tool_response": '
     data = (head + "[" * 100_000 + "]" * 100_000 + "}").encode()
-    _assert_unreadable_gap(home, run_bytes(home, data), "PostToolUse")
+    _assert_unreadable_gap(home, run_bytes(home, data, default_stack=True), "PostToolUse")
 
 
 def test_invalid_utf8_failure_event_is_counted_and_reported(tmp_path):

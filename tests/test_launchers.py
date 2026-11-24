@@ -202,7 +202,7 @@ def test_cli_launcher_tries_a_later_copy_of_the_same_name(tmp_path):
         [SH, str(CLI_LAUNCHER)],
         capture_output=True,
         text=True,
-        env={"PATH": f"{first}:{second}:/usr/bin:/bin", "HOME": str(tmp_path / "home")},
+        env={"PATH": f"{first}:{second}", "HOME": str(tmp_path / "home")},
         timeout=30,
     )
     assert p.stdout.splitlines() == ["second"]

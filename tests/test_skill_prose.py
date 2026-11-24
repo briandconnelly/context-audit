@@ -174,6 +174,7 @@ def test_directive_is_high(text, tmp_path):
     assert "high" in _severities(text, tmp_path)
 
 
+@pytest.mark.perf
 def test_sixty_kb_of_instructional_prose_completes_within_budget(tmp_path):
     from context_audit.scan import Budget
 

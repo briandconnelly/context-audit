@@ -4,6 +4,7 @@ import threading
 
 from probe import markers
 from probe.sandbox import Sandbox
+from tests.conftest import needs_network_denial
 
 CONNECT = (
     "import socket,sys\n"
@@ -24,6 +25,7 @@ def test_env_is_an_allowlist(tmp_path, monkeypatch):
     assert env["CLAUDE_CONFIG_DIR"].startswith(str(tmp_path))
 
 
+@needs_network_denial
 def test_loopback_allowed_and_external_denied(tmp_path):
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
@@ -40,6 +42,7 @@ def test_loopback_allowed_and_external_denied(tmp_path):
     listener.close()
 
 
+@needs_network_denial
 def test_timeout_is_reported_not_raised(tmp_path):
     done = Sandbox(tmp_path).run(
         [sys.executable, "-c", "import time; time.sleep(30)"], cwd=tmp_path, timeout=1
@@ -48,6 +51,7 @@ def test_timeout_is_reported_not_raised(tmp_path):
     assert done.exit is None
 
 
+@needs_network_denial
 def test_stdin_is_passed(tmp_path):
     done = Sandbox(tmp_path).run(
         [sys.executable, "-c", "import sys; print(sys.stdin.read().upper())"],
