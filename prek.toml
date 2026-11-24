@@ -30,7 +30,7 @@ hooks = [
   { id = "ruff-format", name = "ruff format", language = "system", entry = "uv run ruff format --force-exclude", types = ["python"] },
   { id = "ty", name = "ty check", language = "system", entry = "uv run ty check", types = ["python"], pass_filenames = false },
   # Includes the corpus manifest and audit-skill prose tests.
-  { id = "pytest", name = "pytest", language = "system", entry = "uv run pytest -q", files = "^(context_audit|hooks|bin|skills|evaluation|probe|tests)/|^(pyproject\\.toml|uv\\.lock)$", pass_filenames = false },
+  { id = "pytest", name = "pytest", language = "system", entry = "uv run pytest -q", files = "^(context_audit|hooks|bin|skills|evaluation|probe|tests|docs|\\.claude-plugin)/|^(pyproject\\.toml|uv\\.lock)$", pass_filenames = false },
   { id = "shellcheck", name = "shellcheck", language = "system", entry = "shellcheck", files = "^bin/", pass_filenames = true },
 ]
 
