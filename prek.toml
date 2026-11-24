@@ -4,9 +4,10 @@ minimum_prek_version = "0.5.0"
 repo = "builtin"
 hooks = [
   # bin/ launchers set IFS to a literal space-tab-newline; trailing whitespace is meaningful there.
-  { id = "trailing-whitespace", exclude = "^bin/" },
-  { id = "end-of-file-fixer" },
-  { id = "mixed-line-ending" },
+  { id = "trailing-whitespace", exclude = "^(bin/|evaluation/(corpus|dev|heldout)/)" },
+  # Corpus files are frozen (`corpus:` commits only); a hook rewriting one would break the manifest.
+  { id = "end-of-file-fixer", exclude = "^evaluation/(corpus|dev|heldout)/" },
+  { id = "mixed-line-ending", exclude = "^evaluation/(corpus|dev|heldout)/" },
   { id = "check-merge-conflict" },
   { id = "check-added-large-files" },
   { id = "check-yaml" },
@@ -25,11 +26,11 @@ hooks = [
 [[repos]]
 repo = "local"
 hooks = [
-  { id = "ruff-check", name = "ruff check", language = "system", entry = "uv run ruff check --fix", types = ["python"] },
-  { id = "ruff-format", name = "ruff format", language = "system", entry = "uv run ruff format", types = ["python"] },
+  { id = "ruff-check", name = "ruff check", language = "system", entry = "uv run ruff check --fix --force-exclude", types = ["python"] },
+  { id = "ruff-format", name = "ruff format", language = "system", entry = "uv run ruff format --force-exclude", types = ["python"] },
   { id = "ty", name = "ty check", language = "system", entry = "uv run ty check", types = ["python"], pass_filenames = false },
   # Includes the corpus manifest and audit-skill prose tests.
-  { id = "pytest", name = "pytest", language = "system", entry = "uv run pytest -q", files = "^(context_audit|hooks|bin|skills|evaluation|probe|tests)/|^pyproject\\.toml$", pass_filenames = false },
+  { id = "pytest", name = "pytest", language = "system", entry = "uv run pytest -q", files = "^(context_audit|hooks|bin|skills|evaluation|probe|tests)/|^(pyproject\\.toml|uv\\.lock)$", pass_filenames = false },
   { id = "shellcheck", name = "shellcheck", language = "system", entry = "shellcheck", files = "^bin/", pass_filenames = true },
 ]
 

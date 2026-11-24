@@ -28,5 +28,9 @@ jobs:
         run: uv sync --locked
       - name: Install prek
         run: uv tool install prek==0.5.11
+      # Held-out corpus text must never reach the public log, so no tracebacks or
+      # assertion introspection here; reproduce failures locally.
       - name: Run prek hooks
-        run: prek run --all-files --show-diff-on-failure
+        env:
+          PYTEST_ADDOPTS: --tb=no
+        run: prek run --all-files
