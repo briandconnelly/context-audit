@@ -264,6 +264,7 @@ def test_fenced_still_uses_original_lines():
     ["\x1b" * 200_000, "\x1b]" * 50_000 + "x" * 100_000, "word\n" * 100_000],
     ids=["esc", "osc-openers", "one-word-lines"],
 )
+@pytest.mark.perf  # a wall-clock budget; a shared CI runner overran it (0.57 s)
 def test_control_and_line_inputs_are_linear(text):
     start = time.perf_counter()
     n = normalize(field(text))
