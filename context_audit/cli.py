@@ -19,7 +19,7 @@ import json  # noqa: E402
 import os  # noqa: E402
 import stat  # noqa: E402
 
-from context_audit import __version__, state  # noqa: E402
+from context_audit import __version__, decider, state  # noqa: E402
 from context_audit.ingest import from_hook_event, source_id_for  # noqa: E402
 from context_audit.inventory import (  # noqa: E402
     Roots,
@@ -101,6 +101,16 @@ def _scan_source(source: Source, root: Path) -> tuple[list[Field], ScanResult | 
     return fields, scan_fields(fields, state_root=root, budget=STATIC_BUDGET)
 
 
+def _second_opinion(cfg: decider.Config, fields: list[Field]) -> str:
+    """The highest verdict over a source's fields. A failed call outranks review and none,
+    so a source is never reported clean when part of it went unjudged."""
+    verdicts = {decider.decide(cfg, [f.text], f.surface) for f in fields if f.text.strip()}
+    for v in ("high", "error", "review"):
+        if v in verdicts:
+            return v
+    return "none"
+
+
 def _print_selftest(results: list[SelfTest]) -> None:
     print("Self-test (per entry point):")
     for t in results:
@@ -144,15 +154,23 @@ def cmd_scan(args: argparse.Namespace) -> int:
     found: list[tuple[Finding, Source]] = []
     outcomes: dict[str, str] = {}
     results_by_source: dict[str, ScanResult] = {}
+    try:
+        cfg = decider.config()
+        unusable = False
+    except decider.DeciderError:
+        cfg, unusable = None, True
+    opinions: list[tuple[Source, str]] | None = [] if cfg else None
     for s in sources:
         if s.kind in READ_KINDS and not s.skipped:
-            result = _scan_source(s, root)[1]
+            fields, result = _scan_source(s, root)
             if result is None:
                 outcomes[s.source_id] = "unreadable"
                 continue
             outcomes[s.source_id] = result.outcome
             results_by_source[s.source_id] = result
             found.extend((f, s) for f in result.findings)
+            if cfg is not None and opinions is not None:
+                opinions.append((s, _second_opinion(cfg, fields)))
     events, _ = split_records(state.read_events(root))
     on_record = {e.get("finding_id") for e in events if e.get("event") == "scan"}
     for f, s in found:
@@ -171,6 +189,8 @@ def cmd_scan(args: argparse.Namespace) -> int:
         trimmed=(root / "trimmed").exists(),
         outcomes=outcomes,
         malformed=malformed,
+        second_opinion=opinions,
+        decider_unusable=unusable,
         **_capability(root),
     )
     if args.json:
@@ -179,6 +199,11 @@ def cmd_scan(args: argparse.Namespace) -> int:
         _print_selftest(results)
         _print_coverage(rep)
         _print_owner_findings(rep, found, log)
+        if "second_opinion" in rep:
+            print("Second opinion (advisory; decider vs. scanner):")
+            for e in rep["second_opinion"]:
+                verdicts = f"decider {e['decider']}, scanner {e['scanner']}"
+                print(f"  {e['source']} ({e['kind']}): {verdicts}")
         for m in rep["messages"]:
             if m not in (TOTAL_UNKNOWN, CAPABILITY_SCOPE, VERSION_UNKNOWN):  # printed above
                 print(m)

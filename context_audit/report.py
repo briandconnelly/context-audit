@@ -12,6 +12,7 @@ import re
 import unicodedata
 from collections.abc import Iterable, Mapping
 
+from context_audit.decider import VERDICTS
 from context_audit.features import FEATURES
 from context_audit.inventory import SKIP_REASONS, Source
 from context_audit.rules import Finding
@@ -72,8 +73,17 @@ INVESTIGATE = (
     "To investigate a finding, the owner runs the show command for its finding_id "
     "in a separate terminal."
 )
+SECOND_OPINION = (
+    "'second_opinion' is advisory: a decision model the owner configured judged each scanned "
+    "source. It never changes a finding or the exit status. A source where it and the scanner "
+    "disagree is worth the owner's look; 'error' means the call failed, not that nothing is there."
+)
+DECIDER_UNUSABLE = (
+    "A decider is configured but its settings are unusable, so no second opinion was taken."
+)
 FIXED_MESSAGES = frozenset(
-    {VOIDED_MESSAGE, TOTAL_UNKNOWN, NOTHING_OBSERVED, MCP_NOT_LISTED, LOG_TRIMMED, NAMES_NOTE,
+    {SECOND_OPINION, DECIDER_UNUSABLE,
+     VOIDED_MESSAGE, TOTAL_UNKNOWN, NOTHING_OBSERVED, MCP_NOT_LISTED, LOG_TRIMMED, NAMES_NOTE,
      INVESTIGATE, CAPABILITY_SCOPE, VERSION_UNKNOWN, NOT_FULLY_SCANNED}
 )  # fmt: skip
 
@@ -202,6 +212,8 @@ def model_report(
     claude_version_known: bool = True,
     outcomes: Mapping[str, str] | None = None,
     malformed: int = 0,
+    second_opinion: list[tuple[Source, str]] | None = None,
+    decider_unusable: bool = False,
 ) -> dict:
     voided = [t.entry for t in selftest if not t.passed]
     items: list[dict] = []
@@ -245,6 +257,12 @@ def model_report(
         messages.append(LOG_TRIMMED)
     if items:
         messages += [NAMES_NOTE, INVESTIGATE]
+    if decider_unusable:
+        messages.append(DECIDER_UNUSABLE)
+    extra: dict = {}
+    if second_opinion is not None:
+        messages.append(SECOND_OPINION)
+        extra["second_opinion"] = second_opinion_entries(second_opinion, findings)
     return {
         "selftest": [
             {
@@ -261,4 +279,30 @@ def model_report(
         "findings": items,
         "voided": voided,
         "messages": messages,
+        **extra,
     }
+
+
+def second_opinion_entries(
+    verdicts: list[tuple[Source, str]], findings: list[tuple[Finding, Source]]
+) -> list[dict]:
+    """One entry per judged source: the decider's verdict beside the scanner's top severity,
+    matched by source ID so that two sources with one name keep their own severities."""
+    top: dict[str, str] = {}
+    for f, s in findings:
+        if top.get(s.source_id) != "high":
+            top[s.source_id] = f.severity
+    out = []
+    for s, v in verdicts:
+        if v not in VERDICTS:
+            v = "error"
+        out.append(
+            {
+                "source": safe_name(s.name, s.source_id),
+                "kind": s.kind,
+                "scanner": top.get(s.source_id, "none"),
+                "decider": v,
+            }
+        )
+    out.sort(key=lambda e: (e["decider"] != "high", e["scanner"] != "high", e["source"]))
+    return out
