@@ -1,6 +1,6 @@
 """Warn-only hook: scan an MCP tool result, record what was seen, warn on a high finding.
 
-Claude Code runs it as ``python3 -I <plugin>/context_audit/hook.py`` with one event on
+The plugin runs it as ``python3 -I <plugin>/context_audit/hook.py`` with one event on
 stdin, so it puts its own repository root on the path. It never blocks, replaces, or
 withholds a result, and on any error it prints nothing and exits 0. Nothing from the
 result, the tool name, or the server name is printed or logged: the tool is identified
@@ -195,7 +195,11 @@ def _handle_result(event: dict, kind: str, root: Path | None, key_root: Path) ->
     )
     if len(high) > 1:
         message += f" (+{len(high) - 1} more)"
-    late = ing.oversized and any(f.ranges and f.ranges[0][1] >= PREVIEW_LIMIT for f in high)
+    late = (
+        "turn_id" not in event
+        and ing.oversized
+        and any(f.ranges and f.ranges[0][1] >= PREVIEW_LIMIT for f in high)
+    )
     note = MODEL_NOTE_OVERSIZED if late else MODEL_NOTE
     return {
         "systemMessage": message,

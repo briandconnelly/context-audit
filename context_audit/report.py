@@ -46,6 +46,9 @@ CAPABILITY_SCOPE = (
     "A capability is shown only for the frontend and permission mode listed with it; "
     "it is unverified for every other way of running Claude Code."
 )
+CODEX_CAPABILITY = (
+    "Codex hook capabilities have no probe receipt. Observation counts use shared state."
+)
 VERSION_UNKNOWN = "The installed Claude Code version is unknown, so no receipt can match."
 
 VOIDED_MESSAGE = (
@@ -210,6 +213,7 @@ def model_report(
     trimmed: bool,
     capability: list[dict] | None = None,
     claude_version_known: bool = True,
+    codex: bool = False,
     outcomes: Mapping[str, str] | None = None,
     malformed: int = 0,
     second_opinion: list[tuple[Source, str]] | None = None,
@@ -244,8 +248,8 @@ def model_report(
     if voided:
         messages.append(VOIDED_MESSAGE)
     messages.append(TOTAL_UNKNOWN)
-    messages.append(CAPABILITY_SCOPE)
-    if not claude_version_known:
+    messages.append(CODEX_CAPABILITY if codex else CAPABILITY_SCOPE)
+    if not codex and not claude_version_known:
         messages.append(VERSION_UNKNOWN)
     if obs["calls_requested"] == 0 and obs["results_delivered"] == 0:
         messages.append(NOTHING_OBSERVED)
