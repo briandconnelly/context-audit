@@ -947,7 +947,8 @@ _USER_CLAUSE = re.compile(
 # the font be changed", "a review of the essay").
 _CLAUSE_END = (
     r"(?:\s+(?:already|earlier|explicitly|beforehand|previously|first|again|too|twice|once"
-    r"|then|now|above|here|today|recently))*"
+    r"|then|now|above|here|today|recently|just\s+now|a\s+moment\s+ago"
+    r"|(?:a\s+few|two|several)\s+(?:seconds|minutes)\s+ago))*"
     r"(?:\s*(?:$|[,;:.!?](?!\w)|\b(?:then|and)\b)"
     r"|\s+(?:in|during|within|at|on|via|through|by|with|from|for|before|when|while|as)\b)"
 )
@@ -956,10 +957,14 @@ _STRICT_END = re.compile(
     r"(?:\s+(?:already|earlier|explicitly|again|too))*\s*(?:$|[,;:.!?](?!\w)|\b(?:then|and)\b)",
     _I,
 )
-# (i) An anaphor for the act or the overridden step, as the whole object.
+# (i) An anaphor for the act or the overridden step, as the whole object. "this exact
+# layout" and "that same proof change" also qualify: "exact" or "same" ties any short noun
+# phrase to the act itself, where a bare "this newsletter" does not.
 _ANAPHOR = re.compile(
     r"\s+(?:(?:this|that)\s+(?:(?:exact|same|specific|particular)\s+)?"
-    rf"(?:action|step|change|operation)|this|that|it|them|so|the\s+above){_CLAUSE_END}",
+    r"(?:action|step|change|operation)"
+    r"|(?:this|that)\s+(?:exact|same)\s+(?:[a-z-]+\s+)?[a-z-]+"
+    rf"|this|that|it|them|so|the\s+above){_CLAUSE_END}",
     _I,
 )
 # (iv) What may follow "said yes": the prompt it answers, then the end of the clause. An
@@ -1018,6 +1023,7 @@ _AUTHORITY_WORD = re.compile(
 # noun for the step, or a function word ("the confirmation if", "the approval only when",
 # "the confirmation for this run"). Any other word is the head that the approval word only
 # modifies ("the approval rules", "the confirmation email"), and so is "of ...".
+_TARGET_CUT = re.compile(r"\s+(?:and|then)\s+", _I)
 _AFTER_TARGET = re.compile(
     rf"\s*(?:$|[,;:.!?)](?!\w))|\s+(?:(?P<step>{_STEP_NOUN})|(?P<word>[a-z]+))(?![\w'’-])", _I
 )
@@ -1114,6 +1120,12 @@ def _override_target(s: str, a: int, b: int) -> tuple[bool, set[str]] | None:
     to an authority: instructions, rules, policy, settings, a system prompt), and its head
     nouns. None when the target is not plainly either, so that nothing cancels."""
     span = s[a:b]
+    # "skip the duplicate prompt and make the approved change": the target ends at the
+    # conjunction, not inside the next act.
+    cut = _TARGET_CUT.search(span)
+    if cut is not None and _TARGET_HEAD.search(span, 0, cut.start()):
+        b = a + cut.start()
+        span = s[a:b]
     authority = _AUTHORITY_WORD.search(span) is not None
     if not authority and not _APPROVAL_STEM.search(span):
         if not _AUTHORITY_HEAD.search(span):
@@ -1126,6 +1138,9 @@ def _override_target(s: str, a: int, b: int) -> tuple[bool, set[str]] | None:
     word = after.group("word")
     if word is not None and word.lower() not in _AFTER_TARGET_WORDS:
         noun = _AUTHORITY_HEAD.fullmatch(word)
+        if noun is None and not authority and _TARGET_HEAD.fullmatch(word):
+            # "without asking for approval a second time": the step is the next word
+            return _override_target(s, a, a + len(span) + after.end() - after.start())
         if noun is None:
             return None  # "the confirmation email", "the rules committee"
         # "the approval rules": the head is the authority noun, and it must end the target
