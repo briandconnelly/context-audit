@@ -1,0 +1,37 @@
+name: prek
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prek-${{ github.ref }}
+  cancel-in-progress: true
+
+# evaluation.gates is deliberately not run here: its probe-receipt gate needs the real
+# `claude` inside the probe's network sandbox. Run it locally (see CONTRIBUTING.md).
+jobs:
+  prek:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - name: Install shellcheck
+        run: sudo apt-get install -y shellcheck
+      - name: Sync dev environment
+        run: uv sync --locked
+      - name: Install prek
+        run: uv tool install prek==0.5.11
+      # Held-out corpus text must never reach the public log, so no tracebacks or
+      # assertion introspection here; reproduce failures locally. Wall-clock budgets (perf)
+      # are measured on a developer machine. Sandboxed probe tests skip without sandbox-exec.
+      - name: Run prek hooks
+        env:
+          PYTEST_ADDOPTS: --tb=no -rfs -m 'not perf'
+        run: prek run --all-files

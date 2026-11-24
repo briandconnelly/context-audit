@@ -9,6 +9,7 @@ from probe import runner
 from probe.runner import run_scenario
 from probe.scenario import HookSpec, Scenario
 from probe.stub import Reply
+from tests.conftest import needs_network_denial
 
 
 def scenario(check=None):
@@ -34,6 +35,7 @@ def test_refuses_non_empty_run_dir(tmp_path):
         run_scenario(scenario(), tmp_path)
 
 
+@needs_network_denial
 def test_timeout_is_inconclusive(tmp_path, monkeypatch):
     fake = fake_claude(tmp_path, "import time; time.sleep(30)")
     monkeypatch.setattr(runner, "CLAUDE_ARGV0", fake)
@@ -42,6 +44,7 @@ def test_timeout_is_inconclusive(tmp_path, monkeypatch):
     assert "timed out" in result.reason
 
 
+@needs_network_denial
 def test_no_stub_request_is_inconclusive(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "CLAUDE_ARGV0", fake_claude(tmp_path, "raise SystemExit(1)"))
     result = run_scenario(scenario(), tmp_path / "run", timeout=10)
@@ -49,6 +52,7 @@ def test_no_stub_request_is_inconclusive(tmp_path, monkeypatch):
     assert "no request reached the stub" in result.reason
 
 
+@needs_network_denial
 def test_check_exception_is_inconclusive(tmp_path, monkeypatch):
     post = (
         "import json,os,urllib.request\n"
@@ -67,6 +71,7 @@ def test_check_exception_is_inconclusive(tmp_path, monkeypatch):
     assert "check failed" in result.reason
 
 
+@needs_network_denial
 def test_evidence_reaches_the_check(tmp_path, monkeypatch):
     post = (
         "import json,os,urllib.request\n"
@@ -113,6 +118,7 @@ def test_hook_without_matcher_omits_it(tmp_path):
     assert "matcher" not in settings["hooks"]["Stop"][0]
 
 
+@needs_network_denial
 def test_relative_run_dir_yields_absolute_paths(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(runner, "CLAUDE_ARGV0", fake_claude(tmp_path, "raise SystemExit(1)"))
@@ -123,6 +129,7 @@ def test_relative_run_dir_yields_absolute_paths(tmp_path, monkeypatch):
     assert f"PROBE_HOOK_LOG={result.run_dir}/hooks.jsonl" in command
 
 
+@needs_network_denial
 def test_claude_runs_outside_the_home_tree(tmp_path, monkeypatch):
     # Claude Code reads CLAUDE.md and .claude/skills from every ancestor of its working directory,
     # so a working directory under the owner's home leaks their real instructions into the run.
@@ -163,6 +170,7 @@ def test_a_loaded_instruction_file_in_any_scenario_is_inconclusive():
     assert "instruction file" in reason
 
 
+@needs_network_denial
 def test_planted_files_are_written_two_levels_above_the_working_directory(tmp_path, monkeypatch):
     body = (
         "import os, pathlib, sys\n"

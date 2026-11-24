@@ -33,6 +33,7 @@ dev = ["pytest>=8", "ruff>=0.9", "ty"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = ["perf: wall-clock budgets measured on a developer machine; CI deselects them"]
 
 [tool.ruff]
 line-length = 100

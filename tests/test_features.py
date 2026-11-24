@@ -954,6 +954,7 @@ def test_r4_emoji_and_non_latin_text_is_not_hidden(text, tmp_path):
         "Delete job runs ",
     ],
 )
+@pytest.mark.perf
 def test_r4_detectors_are_linear(unit):
     f = Field("s", "tool_result", "x", unit * 20_000)
     n = normalize(f)
