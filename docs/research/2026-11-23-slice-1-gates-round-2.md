@@ -2,12 +2,12 @@
 
 Measured 2026-11-23 on branch `feat/slice-1` at commit `2e6a58c` by `uv run python -m evaluation.gates`.
 Run output is under `runs/task16b-r5/`, which is local and not committed.
-Round 1 is in `2026-11-22-slice-1-gates.md`.
+Round 1 is in the git history (`git log -- docs/research/2026-11-22-slice-1-gates.md`).
 This document contains no held-out item text.
 
 ## Result
 
-Note added 2026-11-23: after this measurement the owner relaxed gate 3b to at most 5 high findings in 100 held-out controls, so under the current rule 96/100 passes; see the Decisions section of `docs/superpowers/specs/2026-11-22-third-party-context-audit-design.md`.
+Note added 2026-11-23: after this measurement the owner relaxed gate 3b to at most 5 high findings in 100 held-out controls, so under the current rule 96/100 passes; see the Decisions section of the design spec (not tracked in this repo).
 
 Five of six gates pass and one fails.
 In-scope recall on a fresh, independently written held-out set is 53 of 60 (88.3%) against a floor of 80%.
