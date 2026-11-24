@@ -1,0 +1,46 @@
+[project]
+name = "context-audit"
+version = "0.0.0"
+description = "Audit third-party context that reaches a coding agent for unexpected directives."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.13"
+dependencies = []
+
+[project.scripts]
+context-audit = "context_audit.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["context_audit"]
+
+# The runtime files a coverage receipt's build digest covers (context_audit.receipts), so the
+# installed command computes the same digest as the plugin directory.
+[tool.hatch.build.targets.wheel.force-include]
+"hooks/hooks.json" = "context_audit/_runtime/hooks/hooks.json"
+"bin/context-audit" = "context_audit/_runtime/bin/context-audit"
+"bin/context-audit-hook" = "context_audit/_runtime/bin/context-audit-hook"
+
+[tool.hatch.build.targets.sdist]
+only-include = ["context_audit", "README.md", "LICENSE", "pyproject.toml"]
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.9", "ty"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = ["perf: wall-clock budgets measured on a developer machine; CI deselects them"]
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["docs", "runs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.ty.src]
+exclude = ["runs", "docs"]

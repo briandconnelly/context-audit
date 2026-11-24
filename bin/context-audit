@@ -1,0 +1,23 @@
+#!/bin/sh
+# Run the context-audit CLI under the newest Python 3.13+ on PATH, located from this file's own path.
+# Run it from the plugin's bin/ directory; it is not meant to be symlinked elsewhere.
+case $0 in
+*/*) here=${0%/*} ;;
+*) here=. ;;
+esac
+check='import sys; print("ctxa-ok" if sys.version_info >= (3, 13) else "ctxa-old")'
+set -f
+for py in python3.15 python3.14 python3.13 python3; do
+  IFS=:
+  for dir in $PATH; do
+    IFS=' 	
+'
+    [ -n "$dir" ] || continue # an empty entry would mean the current directory
+    cand=$dir/$py
+    if [ -f "$cand" ] && [ -x "$cand" ] && [ "$("$cand" -I -c "$check" 2>/dev/null)" = ctxa-ok ]; then
+      exec "$cand" -I "$here/../context_audit/cli.py" "$@"
+    fi
+  done
+done
+echo "context-audit: needs Python 3.13 or newer, and none was found on PATH" >&2
+exit 127
