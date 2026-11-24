@@ -20,6 +20,9 @@ Run these before sending any change:
 uv run pytest -q && uv run ruff check . && uv run ruff format --check . && uv run ty check
 ```
 
+The same checks, plus file hygiene, shellcheck, actionlint and zizmor, run as [prek](https://github.com/j178/prek) hooks; CI runs them on every pull request.
+Install them once with `prek install`, or run them with `prek run --all-files`.
+
 For any change to `context_audit/`, `hooks/`, `bin/`, or `evaluation/`, also run the release gates (see [evaluation/README.md](evaluation/README.md)):
 
 ```sh

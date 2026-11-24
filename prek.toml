@@ -1,0 +1,44 @@
+minimum_prek_version = "0.5.0"
+
+[[repos]]
+repo = "builtin"
+hooks = [
+  # bin/ launchers set IFS to a literal space-tab-newline; trailing whitespace is meaningful there.
+  { id = "trailing-whitespace", exclude = "^bin/" },
+  { id = "end-of-file-fixer" },
+  { id = "mixed-line-ending" },
+  { id = "check-merge-conflict" },
+  { id = "check-added-large-files" },
+  { id = "check-yaml" },
+  { id = "check-toml" },
+  { id = "check-json" },
+]
+
+[[repos]]
+repo = "meta"
+hooks = [
+  { id = "check-hooks-apply" },
+  { id = "check-useless-excludes" },
+]
+
+# Uses the project's locked tool versions so prek and `uv run` never disagree.
+[[repos]]
+repo = "local"
+hooks = [
+  { id = "ruff-check", name = "ruff check", language = "system", entry = "uv run ruff check --fix", types = ["python"] },
+  { id = "ruff-format", name = "ruff format", language = "system", entry = "uv run ruff format", types = ["python"] },
+  { id = "ty", name = "ty check", language = "system", entry = "uv run ty check", types = ["python"], pass_filenames = false },
+  # Includes the corpus manifest and audit-skill prose tests.
+  { id = "pytest", name = "pytest", language = "system", entry = "uv run pytest -q", files = "^(context_audit|hooks|bin|skills|evaluation|probe|tests)/|^pyproject\\.toml$", pass_filenames = false },
+  { id = "shellcheck", name = "shellcheck", language = "system", entry = "shellcheck", files = "^bin/", pass_filenames = true },
+]
+
+[[repos]]
+repo = "https://github.com/rhysd/actionlint"
+rev = "v1.7.12"
+hooks = [{ id = "actionlint" }]
+
+[[repos]]
+repo = "https://github.com/zizmorcore/zizmor-pre-commit"
+rev = "v1.32.0"
+hooks = [{ id = "zizmor" }]

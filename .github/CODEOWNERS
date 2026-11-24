@@ -1,0 +1,8 @@
+# Last match wins, so the catch-all comes first.
+*                                       @briandconnelly
+/AGENTS.md                              @briandconnelly
+/.github/                               @briandconnelly
+/prek.toml                              @briandconnelly
+/evaluation/                            @briandconnelly
+/skills/                                @briandconnelly
+/hooks/                                 @briandconnelly
