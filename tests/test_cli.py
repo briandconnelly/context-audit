@@ -409,3 +409,10 @@ def test_status_shows_logged_high_findings(env, capsys):
     out = capsys.readouterr().out
     assert "Logged high findings: 1" in out and "f-0123456789ab" in out
     assert "f-0123456789ac" not in out
+
+
+@pytest.mark.parametrize("command", ["status", "scan"])
+def test_codex_text_report_prints_shared_state_caveat_once(env, capsys, monkeypatch, command):
+    monkeypatch.setattr(Path, "home", lambda: env["tmp"])
+    assert run(env, command, "--codex-dir", str(env["tmp"] / "codex")) == 0
+    assert capsys.readouterr().out.count(report.CODEX_CAPABILITY) == 1

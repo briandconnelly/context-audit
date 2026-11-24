@@ -31,6 +31,7 @@ from context_audit.inventory import (  # noqa: E402
 from context_audit.receipts import capability, installed_claude_version  # noqa: E402
 from context_audit.report import (  # noqa: E402
     CAPABILITY_SCOPE,
+    CODEX_CAPABILITY,
     FINDING_ID,
     READ_KINDS,
     TOOL_SURFACES,
@@ -67,7 +68,12 @@ class _Unavailable(Exception):
 def _roots(args: argparse.Namespace) -> Roots:
     project = args.project if args.project is not None else Path.cwd()
     base = default_roots(project)
-    return Roots(args.claude_dir or base.claude_dir, args.claude_json or base.claude_json, project)
+    codex_dir = args.codex_dir
+    if args.codex and codex_dir is None:
+        codex_dir = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    return Roots(
+        args.claude_dir or base.claude_dir, args.claude_json or base.claude_json, project, codex_dir
+    )
 
 
 def _open_state() -> Path:
@@ -83,9 +89,11 @@ def _open_state() -> Path:
     return root
 
 
-def _capability(root: Path) -> dict:
+def _capability(root: Path, args: argparse.Namespace) -> dict:
     """model_report arguments from the receipts that match the installed Claude Code and
     this plugin."""
+    if args.codex or args.codex_dir is not None:
+        return {"codex": True}
     version = installed_claude_version()
     return {
         "capability": capability(root, version, __version__),
@@ -118,6 +126,9 @@ def _print_selftest(results: list[SelfTest]) -> None:
         print(f"  {t.entry}: {verdict} (missed {len(t.missed)}, flagged {len(t.flagged)})")
 
 
+_CAPABILITY_MESSAGES = (CAPABILITY_SCOPE, CODEX_CAPABILITY, VERSION_UNKNOWN)
+
+
 def _print_coverage(rep: dict) -> None:
     print("Capability (per behaviour):")
     for c in rep["capability"]:
@@ -126,7 +137,7 @@ def _print_coverage(rep: dict) -> None:
             mode = c["permission_mode"] + (" mode" if c["permission_mode"] == "default" else "")
             where = f" ({c['frontend']}, {mode})"
         print(f"  {c['behaviour']}: {c['status']}{where}")
-    for m in (CAPABILITY_SCOPE, VERSION_UNKNOWN):
+    for m in _CAPABILITY_MESSAGES:
         if m in rep["messages"]:
             print(f"  {m}")
     print("Observation (counts, not a verdict):")
@@ -191,7 +202,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         malformed=malformed,
         second_opinion=opinions,
         decider_unusable=unusable,
-        **_capability(root),
+        **_capability(root, args),
     )
     if args.json:
         print(json.dumps(rep, ensure_ascii=True, indent=2))
@@ -205,7 +216,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
                 verdicts = f"decider {e['decider']}, scanner {e['scanner']}"
                 print(f"  {e['source']} ({e['kind']}): {verdicts}")
         for m in rep["messages"]:
-            if m not in (TOTAL_UNKNOWN, CAPABILITY_SCOPE, VERSION_UNKNOWN):  # printed above
+            if m not in (TOTAL_UNKNOWN, *_CAPABILITY_MESSAGES):  # printed above
                 print(m)
     if rep["voided"]:
         return EXIT_SELFTEST
@@ -271,7 +282,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         log_records=[],
         trimmed=trimmed.exists(),
         malformed=malformed,
-        **_capability(root),
+        **_capability(root, args),
     )
     print(f"State directory: {escape(str(root))}")
     _print_selftest(results)
@@ -363,28 +374,81 @@ def _blocks(entry: dict) -> list:
     return [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
 
 
-def _tool_call(entries: list[dict], tool_use_id: str) -> tuple[str | None, list]:
-    """The tool name from the call, and candidate result payloads (string or block list)."""
-    name, payloads = None, []
+def _codex_payloads(output: object) -> list:
+    if isinstance(output, dict):
+        return [output]
+    if isinstance(output, str):
+        _, separator, text = output.partition(" seconds\nOutput:\n")
+        if separator and output.startswith("Wall time: "):
+            output = text
+        candidates: list = [[{"text": output}], output]
+        try:
+            structured = json.loads(output)
+        except (ValueError, RecursionError):
+            return candidates
+        if isinstance(structured, dict):
+            candidates.extend((structured, {"content": [], "structuredContent": structured}))
+        return candidates
+    if isinstance(output, list):
+        blocks = output
+        if blocks and isinstance(blocks[0], dict):
+            header = blocks[0].get("text")
+            if (
+                isinstance(header, str)
+                and header.startswith("Wall time: ")
+                and header.endswith(" seconds\nOutput:")
+            ):
+                blocks = blocks[1:]
+        return [blocks]
+    return []
+
+
+def _tool_call(entries: list[dict], tool_use_id: str) -> tuple[list[str], list]:
+    """Candidate tool names and result payloads from the saved call."""
+    names, payloads = [], []
     for entry in entries:
+        item = entry.get("payload")
+        if (
+            entry.get("type") == "response_item"
+            and isinstance(item, dict)
+            and item.get("call_id") == tool_use_id
+        ):
+            kind = item.get("type")
+            if kind == "function_call" and isinstance(item.get("name"), str):
+                name = item["name"]
+                namespace = item.get("namespace")
+                if isinstance(namespace, str) and namespace:
+                    prefix = "" if namespace.startswith("mcp__") else "mcp__"
+                    names.append(f"{prefix}{namespace}__{name}")
+                    # Current Codex hooks can normalize underscores at the join.
+                    names.append(f"{prefix}{namespace.rstrip('_')}__{name.lstrip('_')}")
+                else:
+                    names.append(name)
+            if kind in {"function_call_output", "mcp_tool_call_output"}:
+                payloads.extend(_codex_payloads(item.get("output")))
         for b in _blocks(entry):
-            if b.get("type") == "tool_use" and b.get("id") == tool_use_id:
-                name = b.get("name") if isinstance(b.get("name"), str) else name
+            if (
+                b.get("type") == "tool_use"
+                and b.get("id") == tool_use_id
+                and isinstance(b.get("name"), str)
+            ):
+                names.append(b["name"])
             if b.get("type") == "tool_result" and b.get("tool_use_id") == tool_use_id:
                 payloads.append(entry.get("toolUseResult"))
                 payloads.append(b.get("content"))
-    return name, [p for p in payloads if isinstance(p, (str, list, dict))]
+    return names, [p for p in payloads if isinstance(p, (str, list, dict))]
 
 
-def _servers(tool: str, source_id: str) -> str | None:
-    """The server name whose identity with `tool` gives `source_id`; raises if none does."""
-    candidates: list[str | None] = [None]
-    if tool.startswith("mcp__"):
-        parts = tool[5:].split("__")
-        candidates += ["__".join(parts[:k]) for k in range(1, len(parts))]
-    for server in candidates:
-        if source_id_for(tool, server) == source_id:
-            return server
+def _tool_identity(names: list[str], source_id: str) -> tuple[str, str | None]:
+    """Match a transcript name and optional server to the recorded source ID."""
+    for tool in names:
+        candidates: list[str | None] = [None]
+        if tool.startswith("mcp__"):
+            parts = tool[5:].split("__")
+            candidates += ["__".join(parts[:k]) for k in range(1, len(parts))]
+        for server in candidates:
+            if source_id_for(tool, server) == source_id:
+                return tool, server
     raise _Unavailable("the tool in the transcript does not match the recorded source")
 
 
@@ -392,15 +456,19 @@ def _show_tool(record: dict, fid: str, root: Path) -> None:
     path, tuid = record.get("transcript"), record.get("tool_use_id")
     if not isinstance(path, str) or not path or not isinstance(tuid, str) or not tuid:
         raise _Unavailable("the record names no transcript or tool-use ID")
-    name, payloads = _tool_call(_transcript_entries(path, tuid), tuid)
+    entries = _transcript_entries(path, tuid)
+    names, payloads = _tool_call(entries, tuid)
     if not payloads:
         raise _Unavailable("the transcript holds no result for this tool-use ID")
-    if name is None:
+    if not names:
         raise _Unavailable("the transcript holds no call for this tool-use ID")
-    server = _servers(name, str(record.get("source_id")))
+    name, server = _tool_identity(names, str(record.get("source_id")))
+    codex = any(entry.get("type") == "response_item" for entry in entries)
     kind = record["event"]
     for payload in payloads:
         event: dict = {"hook_event_name": kind, "tool_name": name, "tool_use_id": tuid}
+        if codex:
+            event["turn_id"] = ""
         if server is not None:
             event["mcp_server"] = {"name": server}
         if kind == "PostToolUse":
@@ -456,6 +524,8 @@ def _parser() -> argparse.ArgumentParser:
         sp = sub.add_parser(name, help=help)
         sp.add_argument("--claude-dir", type=Path, default=None)
         sp.add_argument("--claude-json", type=Path, default=None)
+        sp.add_argument("--codex", action="store_true", help="audit Codex sources")
+        sp.add_argument("--codex-dir", type=Path, help="audit Codex using this CODEX_HOME")
         sp.add_argument("--project", type=Path, default=None)
         return sp
 
