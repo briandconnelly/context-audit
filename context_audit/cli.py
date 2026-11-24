@@ -427,9 +427,12 @@ def _tool_call(entries: list[dict], tool_use_id: str) -> tuple[list[str], list]:
             if kind in {"function_call_output", "mcp_tool_call_output"}:
                 payloads.extend(_codex_payloads(item.get("output")))
         for b in _blocks(entry):
-            if b.get("type") == "tool_use" and b.get("id") == tool_use_id:
-                if isinstance(b.get("name"), str):
-                    names.append(b["name"])
+            if (
+                b.get("type") == "tool_use"
+                and b.get("id") == tool_use_id
+                and isinstance(b.get("name"), str)
+            ):
+                names.append(b["name"])
             if b.get("type") == "tool_result" and b.get("tool_use_id") == tool_use_id:
                 payloads.append(entry.get("toolUseResult"))
                 payloads.append(b.get("content"))
