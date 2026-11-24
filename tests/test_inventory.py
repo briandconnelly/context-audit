@@ -455,3 +455,32 @@ def test_install_path_with_nul_is_skipped_and_enumeration_continues(tmp_path):
     sources = enumerate_sources(roots)
     assert [s.name for s in by_kind(sources, "skill")] == ["u"]
     assert any(s.name == "bad@mk" and s.skipped == "malformed" for s in sources)
+
+
+def test_codex_inventory_uses_project_and_home_skills_and_mcp_config(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    codex = home / ".codex"
+    project = tmp_path / "project"
+    plugin = codex / "plugins/cache/example/sample/1.0"
+    for parent, name in (
+        (home / ".agents/skills", "user-skill"),
+        (codex / "skills", "legacy-skill"),
+        (project / ".agents/skills", "project-skill"),
+        (project / ".claude/skills", "claude-only"),
+        (plugin / "skills", "plugin-skill"),
+    ):
+        skill = parent / name / "SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text("---\nname: example\n---\nExample text.\n")
+    (codex / "config.toml").write_text('[mcp_servers.example]\nurl = "https://example.com/mcp"\n')
+    roots = Roots(home / ".claude", home / ".claude.json", project, codex)
+    sources = enumerate_sources(roots)
+    assert {s.name for s in sources if s.kind == "skill"} == {
+        "user-skill",
+        "legacy-skill",
+        "project-skill",
+        "plugin-skill",
+    }
+    (server,) = [s for s in sources if s.kind == "mcp_server"]
+    assert server.name == "example" and server.endpoint == "https://example.com"

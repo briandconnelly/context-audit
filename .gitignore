@@ -25,7 +25,10 @@ runs/
 # Agent tooling (local installs and settings)
 .superpowers/
 docs/superpowers/
-.agents/
+.agents/*
+!.agents/plugins/
+.agents/plugins/*
+!.agents/plugins/marketplace.json
 .claude/skills
 .claude/settings.local.json
 

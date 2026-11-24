@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Copy the plugin's runtime files into a clean directory.
 
-The release tree is what an install fetches from `main`: the plugin manifest, hooks,
+The release tree is what an install fetches from `main`: the Claude Code and Codex plugin
+manifests, the Codex marketplace entry, hooks,
 launchers, the `context_audit` package and its packaging metadata (README tells users
 to `uv tool install` the plugin directory), the audit skill, and the user-facing docs.
 Tests, the evaluation corpus (held-out text above all), the probe, and research notes
@@ -25,13 +26,21 @@ FILES = [
     "LICENSE",
     "README.md",
     "docs/reference.md",
-    ".claude-plugin/plugin.json",
-    "hooks/hooks.json",
     "pyproject.toml",
     "uv.lock",
     ".github/dependabot.yml",
 ]
-TREES = ["bin", "context_audit", "skills"]
+# Plugin manifests and hook configs for every harness ship whole, so a new one added to
+# these directories ships without a builder change.
+TREES = [
+    ".claude-plugin",
+    ".codex-plugin",
+    ".agents/plugins",
+    "hooks",
+    "bin",
+    "context_audit",
+    "skills",
+]
 
 
 def tracked(prefix: str) -> list[str]:

@@ -49,6 +49,14 @@ def test_no_caches(tree: Path) -> None:
     assert [f for f in _files(tree) if "__pycache__" in f or f.endswith(".pyc")] == []
 
 
+def test_plugin_files_ship(tree: Path) -> None:
+    # Every manifest and hook config, for every harness, must reach `main`.
+    for rel in builder.TREES[:4]:
+        want = builder.tracked(rel)
+        assert want, rel
+        assert [p for p in want if not (tree / p).is_file()] == []
+
+
 def test_build_digest_matches_source(tree: Path) -> None:
     # A receipt taken on dev must describe the same runtime an install of main runs.
     assert build_digest(tree) == build_digest(REPO)

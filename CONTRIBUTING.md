@@ -69,6 +69,8 @@ uv run python -m evaluation.gates --receipts runs/receipts/receipts.json
 | `hooks/`, `bin/` | The plugin's hook definitions and `sh` launchers. |
 | `skills/auditing-third-party-context/` | The audit skill. It is executed by a model, so treat its wording as code. |
 | `evaluation/` | The labelled corpus, the release gates, and experiments. See [evaluation/README.md](evaluation/README.md). |
+| `.codex-plugin/`, `.agents/plugins/` | Codex plugin manifest and repository marketplace. |
+| `hooks/codex.json` | Codex hook registration for the shared runtime. |
 | `probe/` | A development tool that runs the real `claude` against fixtures to learn what hooks see. |
 | `docs/research/` | Measurements, probe observations, and rulings. |
 | `tests/` | The test suite. |
@@ -91,6 +93,18 @@ Get the owner's approval and a request budget before any run that makes new requ
 Every request and response is cached under `runs/`, input text included, so a rerun with `--cap 0` spends nothing and scores only cached items.
 Running them on `--sets heldout` sends and caches held-out text; do that only when the owner has agreed to spend that set.
 `jev_windows.py` builds its requests with `context_audit.decider`, so its numbers measure the shipped questions.
+
+## Testing the Codex plugin locally
+
+Use a disposable Codex home to check marketplace installation without changing your settings:
+
+```sh
+codex_test_home="$(mktemp -d)"
+CODEX_HOME="$codex_test_home" codex plugin marketplace add .
+CODEX_HOME="$codex_test_home" codex plugin add context-audit@context-audit
+```
+
+The test suite exercises Codex hook payloads and rollout lookup with synthetic data. The probe below measures Claude Code only.
 
 ## The probe
 
