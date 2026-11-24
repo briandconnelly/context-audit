@@ -495,21 +495,27 @@ def test_unwritable_event_log_warns_without_naming_a_show_command(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "output_kind", ["function_call_output", "mcp_tool_call_output", "structured"]
+    ("output_kind", "hook_name"),
+    [
+        ("function_call_output", "mcp__examplecloud__search"),
+        ("mcp_tool_call_output", "mcp__examplecloud____search"),
+        ("structured", "mcp__examplecloud__search"),
+        ("serialized", "mcp__examplecloud__search"),
+    ],
 )
-def test_codex_mcp_envelope_warning_and_rollout_lookup(tmp_path, output_kind, capsys):
+def test_codex_mcp_envelope_warning_and_rollout_lookup(tmp_path, output_kind, hook_name, capsys):
     from context_audit.cli import _show_tool
 
     home = tmp_path / "state"
     transcript = tmp_path / "rollout.jsonl"
-    e = event(turn_id="turn-1", transcript_path=str(transcript))
+    e = event(turn_id="turn-1", transcript_path=str(transcript), tool_name=hook_name)
     del e["mcp_server"]
     response = {
         "content": [{"type": "text", "text": CANARY}],
         "_meta": {"private": "codex-private-marker"},
         "isError": True,
     }
-    if output_kind == "structured":
+    if output_kind in {"structured", "serialized"}:
         response["content"] = []
         response["structuredContent"] = {"answer": CANARY}
     e["tool_response"] = response
@@ -523,12 +529,15 @@ def test_codex_mcp_envelope_warning_and_rollout_lookup(tmp_path, output_kind, ca
     output = response
     if output_kind == "function_call_output":
         output = f"Wall time: 0.0020 seconds\nOutput:\n{CANARY}"
+    if output_kind == "serialized":
+        output = f"Wall time: 0.0020 seconds\nOutput:\n{json.dumps(response['structuredContent'])}"
+    result_kind = {
+        "structured": "mcp_tool_call_output",
+        "serialized": "function_call_output",
+    }.get(output_kind, output_kind)
     rows = [
-        {"type": "function_call", "namespace": "examplecloud", "name": "search"},
-        {
-            "type": "mcp_tool_call_output" if output_kind == "structured" else output_kind,
-            "output": output,
-        },
+        {"type": "function_call", "namespace": "examplecloud_", "name": "_search"},
+        {"type": result_kind, "output": output},
     ]
     transcript.write_text(
         "".join(
