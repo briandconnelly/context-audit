@@ -492,3 +492,61 @@ def test_unwritable_event_log_warns_without_naming_a_show_command(tmp_path):
     msg = json.loads(run(home, event(text=CANARY)).stdout)["systemMessage"]
     assert "show" not in msg
     assert not (tmp_path / "elsewhere").exists()
+
+
+@pytest.mark.parametrize(
+    "output_kind", ["function_call_output", "mcp_tool_call_output", "structured"]
+)
+def test_codex_mcp_envelope_warning_and_rollout_lookup(tmp_path, output_kind, capsys):
+    from context_audit.cli import _show_tool
+
+    home = tmp_path / "state"
+    transcript = tmp_path / "rollout.jsonl"
+    e = event(turn_id="turn-1", transcript_path=str(transcript))
+    del e["mcp_server"]
+    response = {
+        "content": [{"type": "text", "text": CANARY}],
+        "_meta": {"private": "codex-private-marker"},
+        "isError": True,
+    }
+    if output_kind == "structured":
+        response["content"] = []
+        response["structuredContent"] = {"answer": CANARY}
+    e["tool_response"] = response
+    p = run(home, e)
+    assert p.returncode == 0 and p.stderr == ""
+    assert CANARY not in p.stdout and "codex-private-marker" not in p.stdout
+    assert set(json.loads(p.stdout)) == {"systemMessage", "hookSpecificOutput"}
+    (finding,) = [item for item in events(home) if item["severity"] == "high"]
+    assert finding["finding_id"] in p.stdout
+
+    output = response
+    if output_kind == "function_call_output":
+        output = f"Wall time: 0.0020 seconds\nOutput:\n{CANARY}"
+    rows = [
+        {"type": "function_call", "namespace": "examplecloud", "name": "search"},
+        {
+            "type": "mcp_tool_call_output" if output_kind == "structured" else output_kind,
+            "output": output,
+        },
+    ]
+    transcript.write_text(
+        "".join(
+            json.dumps({"type": "response_item", "payload": {**row, "call_id": e["tool_use_id"]}})
+            + "\n"
+            for row in rows
+        )
+    )
+    _show_tool(finding, finding["finding_id"], home)
+    assert CANARY in capsys.readouterr().out.replace(">>>", "").replace("<<<", "")
+
+
+def test_codex_mcp_private_metadata_is_excluded(tmp_path):
+    home = tmp_path / "state"
+    e = event(
+        turn_id="turn-1",
+        tool_response={"content": [], "_meta": {"private": CANARY}},
+    )
+    p = run(home, e)
+    assert (p.returncode, p.stdout, p.stderr) == (0, "", "")
+    assert events(home) == []

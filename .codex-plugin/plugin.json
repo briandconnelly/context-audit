@@ -1,0 +1,10 @@
+{
+  "name": "context-audit",
+  "version": "0.0.0",
+  "description": "Flags third-party directives in skills, plugins, and MCP tool results that reach a coding agent.",
+  "author": {
+    "name": "Brian Connelly"
+  },
+  "license": "MIT",
+  "hooks": "./hooks/codex.json"
+}

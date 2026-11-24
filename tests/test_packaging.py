@@ -70,6 +70,7 @@ def test_hook_command_points_at_an_existing_file():
 def test_skill_command_points_at_an_existing_file():
     _, body = skill_parts()
     assert [line.strip() for line in body].count(SCAN_COMMAND) == 1
+    assert [line.strip() for line in body].count("context-audit scan --codex --json") == 1
     target = Path(SCAN_COMMAND.split('"')[1].replace("${CLAUDE_PLUGIN_ROOT}", str(ROOT)))
     assert target.is_file() and os.access(target, os.X_OK)
 
@@ -89,9 +90,9 @@ def show_lines(text: str | None = None) -> list[str]:
 
 
 def test_skill_never_tells_the_agent_to_run_show():
-    # "show" appears once: in the command block handed to the owner for a separate terminal.
+    # Each host has an investigation command for the owner to run.
     _, body = skill_parts()
-    assert show_lines() == [SHOW_COMMAND]
+    assert show_lines() == [SHOW_COMMAND, "context-audit show --codex FINDING_ID"]
     i = next(n for n, line in enumerate(body) if SHOW.search(line))
     handing = [line for line in body[:i] if line.strip()][-2]
     assert "give the owner this command to run in a separate terminal" in handing
@@ -99,7 +100,7 @@ def test_skill_never_tells_the_agent_to_run_show():
 
 def test_show_check_catches_a_second_mention():
     extra = SKILL.read_text(encoding="utf-8") + "\nRun show yourself.\n"
-    assert len(show_lines(extra)) == 2
+    assert len(show_lines(extra)) == 3
 
 
 def test_skill_says_names_are_third_party_data():
@@ -169,3 +170,26 @@ def test_report_investigate_message_names_no_command():
 
     assert "context-audit" not in INVESTIGATE and "FINDING_ID" not in INVESTIGATE
     assert "show command" in INVESTIGATE
+
+
+def test_codex_marketplace_and_manifest_reference_packaged_hooks():
+    catalog = json.loads((ROOT / ".agents/plugins/marketplace.json").read_text())
+    (entry,) = catalog["plugins"]
+    plugin = ROOT / entry["source"]["path"]
+    manifest = json.loads((plugin / ".codex-plugin/plugin.json").read_text())
+    assert manifest["name"] == entry["name"] == "context-audit"
+    assert manifest["version"] == __version__
+    hooks = json.loads((plugin / manifest["hooks"]).read_text())["hooks"]
+    assert set(hooks) == {"PreToolUse", "PostToolUse"}
+    for groups in hooks.values():
+        assert groups == [
+            {
+                "matcher": "mcp__.*",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": HOOK_COMMAND.replace("CLAUDE_PLUGIN_ROOT", "PLUGIN_ROOT"),
+                    }
+                ],
+            }
+        ]

@@ -1,4 +1,4 @@
-"""Inventory of third-party content a Claude Code installation holds on disk.
+"""Inventory of third-party content a coding agent installation holds on disk.
 
 Nothing is started and no command is run: skills, plugin files, and MCP server
 configuration are enumerated from disk, and the readable parts become `Field`s.
@@ -16,6 +16,7 @@ import json
 import os
 import re
 import stat
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -53,6 +54,7 @@ class Roots:
     claude_dir: Path
     claude_json: Path
     project: Path | None
+    codex_dir: Path | None = None
 
 
 def default_roots(project: Path | None) -> Roots:
@@ -414,9 +416,46 @@ def _plugins(walk: _Walk, claude_dir: Path) -> None:
             _plugin(walk, key, claude_dir, prel)
 
 
+def _codex_config(walk: _Walk, root: Path, rel: Path, scope: str) -> None:
+    try:
+        data, skipped = walk.read(root, rel)
+    except _Absent:
+        return
+    path = root / rel
+    if not skipped:
+        try:
+            doc = tomllib.loads(data.decode("utf-8"))
+            if _servers(walk, doc.get("mcp_servers"), scope, path):
+                return
+        except (ValueError, RecursionError):
+            pass
+    sid = _source_id("mcp_server", str(path))
+    walk.add(Source(sid, "mcp_server", "", path, "configured", skipped or "malformed"))
+
+
+def _codex_sources(walk: _Walk, root: Path, project: Path | None) -> None:
+    _skills(walk, Path.home(), Path(".agents", "skills"))
+    if root.is_dir():
+        _skills(walk, root, Path("skills"))
+        _codex_config(walk, root, Path("config.toml"), "codex:user")
+        for _, market in walk.subdirs(root, Path("plugins", "cache"), "plugin_file"):
+            for name, plugin in walk.subdirs(root, market, "plugin_file"):
+                for _, version in walk.subdirs(root, plugin, "plugin_file"):
+                    manifest = version / ".codex-plugin" / "plugin.json"
+                    walk.file("plugin_file", name, root, manifest)
+                    _skills(walk, root, version / "skills")
+                    _mcp_file(walk, root, version / ".mcp.json", f"codex:plugin:{version}")
+    if project is not None and project.is_dir():
+        _skills(walk, project, Path(".agents", "skills"))
+        _codex_config(walk, project, Path(".codex", "config.toml"), "codex:project")
+
+
 def enumerate_sources(roots: Roots) -> list[Source]:
     walk = _Walk()
     try:
+        if roots.codex_dir is not None:
+            _codex_sources(walk, roots.codex_dir, roots.project)
+            return walk.sources
         if roots.claude_dir.is_dir():
             _skills(walk, roots.claude_dir, Path("skills"))
             _components(walk, roots.claude_dir, Path())

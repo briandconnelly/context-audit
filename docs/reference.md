@@ -50,7 +50,7 @@ A finding is made of features, each tied to a span: `act` (directs an action), `
 
 ## A warning, and how to investigate it
 
-When a high finding is in an MCP tool result or tool error, the hook asks Claude Code to show you a fixed message such as:
+When a high finding is in an MCP tool result or tool error, the hook asks the host to show you a fixed message such as:
 
 ```text
 context-audit: flagged a third-party directive in a tool result (call+conceal-act). Investigate with: context-audit show f-ea9c3929ce9a
@@ -78,10 +78,21 @@ f-521421b65ac6 high call+conceal-act
 
 If no finding with this ID is on record (for example, another state directory or a trimmed log), the transcript is gone, the source has left the inventory, or the file changed so the finding no longer appears, it prints `evidence unavailable:` and the reason, and exits 4.
 Count that as its own verdict when you triage.
-For a finding in a project's `.claude/` directory, run `show` from that project's directory (or pass `--project`), since the project is the current directory by default.
+For a finding in a project file, run `show` from the directory where the audit ran or pass the same `--project` used at scan time. Use the same host options when looking up an on-disk finding.
 `show` prints evidence only when its output is a terminal; piped or redirected, it prints `evidence unavailable:` and exits 4.
 
 ## What is covered
+
+### Codex
+
+Use `--codex` on `inventory`, `scan`, `status`, or `show` to select the Codex inventory. These commands use `CODEX_HOME` or default to `~/.codex`. Use `--codex-dir PATH` to select a different Codex home.
+
+- **On disk**, the audit reads `SKILL.md` files under `~/.agents/skills`, `$CODEX_HOME/skills`, the selected project's `.agents/skills`, and versions under `$CODEX_HOME/plugins/cache`. Cached versions can include disabled plugins. The project defaults to the current directory. Pass `--project` to audit a different directory.
+- The audit inventories MCP servers from user and project `config.toml` and cached plugins' `.mcp.json`. It counts cached plugin manifests. It does not resolve Codex's effective configuration, search parent projects, or scan custom skill paths, agent definitions, or supporting skill files.
+- **During a session**, the trusted hooks count MCP calls in `PreToolUse` and scan text and structured content from `PostToolUse`. MCP error results delivered as `PostToolUse` are scanned along with successful results.
+- Runtime observation counts and findings use the same state directory on both hosts. Codex capability entries remain `unverified`. Evidence lookup needs a saved rollout with enough of the original result to reproduce the finding.
+
+### Claude Code
 
 - **On disk**, by `scan`: skills (`skills/*/SKILL.md`) in your Claude Code directory, its plugins, and the project's `.claude/`; commands and agents (the top-level `.md` files of `commands/` and `agents/`) in the same three places; and prompt hooks in plugins' `hooks/hooks.json`.
   A symlinked skill directory is scanned when its target stays inside the same root; one that leaves it is skipped, and `scan --json` counts skipped sources by reason.

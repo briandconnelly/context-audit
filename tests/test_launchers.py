@@ -197,7 +197,7 @@ def test_cli_launcher_tries_a_later_copy_of_the_same_name(tmp_path):
     first.mkdir()
     second.mkdir()
     fake_interpreter(first, "python3", new=False)
-    impostor(second, "python3", 'echo "$@" | grep -q -- -c && echo ctxa-ok && exit 0; echo second')
+    impostor(second, "python3", 'if [ "$2" = -c ]; then echo ctxa-ok; else echo second; fi')
     p = subprocess.run(
         [SH, str(CLI_LAUNCHER)],
         capture_output=True,

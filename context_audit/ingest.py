@@ -1,4 +1,4 @@
-"""Turn the JSON a Claude Code hook receives into the `Field`s that `scan_fields` scans.
+"""Turn the JSON a coding agent hook receives into the `Field`s that `scan_fields` scans.
 
 Shapes follow the probe (docs/research/2026-11-22-probe-observations.md): a result is a
 list of content blocks or, with `structuredContent`, a string of JSON; a failure carries a
@@ -144,6 +144,20 @@ _UNPARSEABLE = object()
 _DEFAULT_BUDGET = Budget()
 
 
+def _content(c: _Collector, blocks: list) -> None:
+    for i, block in enumerate(blocks):
+        if c.full():
+            break
+        if not isinstance(block, dict):
+            continue
+        text, locator = block.get("text"), f"content[{i}].text"
+        resource = block.get("resource")
+        if not isinstance(text, str) and isinstance(resource, dict):
+            text, locator = resource.get("text"), f"content[{i}].resource.text"
+        if isinstance(text, str):
+            c.text(locator, text, i, locator)
+
+
 def from_hook_event(event: dict, budget: Budget = _DEFAULT_BUDGET) -> Ingested:
     if not isinstance(event, dict):
         return Ingested([], "not_scanned", "undecodable", "", "", False)
@@ -172,21 +186,20 @@ def from_hook_event(event: dict, budget: Budget = _DEFAULT_BUDGET) -> Ingested:
         if isinstance(response, str):
             c.text("text", response, 0, "")
         elif isinstance(response, list):
-            for i, block in enumerate(response):
-                if c.full():
-                    break
-                if not isinstance(block, dict):
-                    continue
-                text, locator = block.get("text"), f"content[{i}].text"
-                resource = block.get("resource")
-                if not isinstance(text, str) and isinstance(resource, dict):
-                    text, locator = resource.get("text"), f"content[{i}].resource.text"
-                if isinstance(text, str):
-                    c.text(locator, text, i, locator)
+            _content(c, response)
         elif isinstance(response, dict):
-            # Structured content handed over already parsed: walked like parsed JSON.
-            c.chars = len(json.dumps(response, ensure_ascii=False, default=str))
-            c._walk(response, "response", 0)
+            blocks = response.get("content")
+            if isinstance(event.get("turn_id"), str) and isinstance(blocks, list):
+                # Codex passes the MCP envelope. Scan model-facing text and structured
+                # data, excluding transport metadata and non-text content blocks.
+                _content(c, blocks)
+                structured = response.get("structuredContent")
+                if isinstance(structured, dict):
+                    c.chars += len(json.dumps(structured, ensure_ascii=False))
+                    c._walk(structured, "response", 0)
+            else:
+                c.chars = len(json.dumps(response, ensure_ascii=False, default=str))
+                c._walk(response, "response", 0)
         else:
             return undecodable()
     else:
