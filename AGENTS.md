@@ -5,6 +5,10 @@ Development setup and checks are in [CONTRIBUTING.md](CONTRIBUTING.md); behaviou
 
 ## Ground rules
 
+- Branch from `dev` and open pull requests against `dev` (`gh pr create --base dev`).
+  `main` is the runtime tree that `.github/workflows/publish-runtime.yml` builds from `dev` with `scripts/build-release-tree.py`; never commit to it or target it.
+  GitHub closes issues from `Fixes #N` only on merges into the default branch (`main`), so close an issue by hand once its fix merges into `dev`.
+- A file that ships (`README.md`, `docs/reference.md`, `skills/`, `context_audit/`) must not link to a dev-only path; link to `https://github.com/briandconnelly/context-audit/blob/dev/...` instead. `tests/test_release_tree.py` checks this.
 - Use `uv` for everything (`uv sync`, `uv run …`). Never pip, and never add a `requirements.txt`.
 - The `context_audit` package is standard-library only. Do not add runtime dependencies.
 - Before calling work done, run `uv run pytest -q && uv run ruff check . && uv run ruff format --check . && uv run ty check`, and `uv run python -m evaluation.gates` for any change to `context_audit/`, `hooks/`, `bin/`, or `evaluation/` (as in CONTRIBUTING.md).

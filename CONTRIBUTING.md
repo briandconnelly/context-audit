@@ -3,6 +3,26 @@
 Thanks for helping.
 This page covers the development setup; user-facing detail is in the [reference](docs/reference.md), and rules for coding agents are in [AGENTS.md](AGENTS.md).
 
+## Branches
+
+Development happens on `dev`; branch from it and open pull requests against it.
+`main` holds only the runtime tree that a plugin install fetches, published from `dev` by `.github/workflows/publish-runtime.yml` after the checks pass.
+The tree's contents are listed in `scripts/build-release-tree.py`; tests, the evaluation corpus, the probe and research notes stay on `dev`.
+Every merge into `dev` publishes, so run the full suite on a Mac (below) before merging a change that touches the runtime.
+
+### One-time cutover (maintainer)
+
+`main` must start as a parentless commit, so no release carries dev history (and the held-out corpus) behind it:
+
+1. Push the current development tip as `dev`; set branch protection and required checks on `dev`.
+2. Build the tree: `python3 scripts/build-release-tree.py /tmp/ca-release`.
+3. In a fresh clone: `git switch --orphan release`, replace the working tree with `/tmp/ca-release` (minus `.context-audit-release`), commit, and force-push it to `main`.
+4. Let `github-actions[bot]` push to `main` (rulesets may block it); keep `main` the default branch.
+5. Fresh-clone `main`, install the plugin from it, and confirm a hook fires. Confirm Dependabot opens PRs against `dev`.
+
+The force-push in step 3 does not erase old objects from GitHub; anyone with the old SHAs can still fetch them.
+Keeping the held-out set fully private needs a separate repository.
+
 ## Setup
 
 You need Python 3.13 or newer and [`uv`](https://docs.astral.sh/uv/).

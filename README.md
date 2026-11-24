@@ -110,8 +110,8 @@ The details, and the caveats on those numbers, are in the [reference](docs/refer
 ## Learn more
 
 - [Reference](docs/reference.md): commands, exit codes, exactly what is and isn't covered, and how well it works.
-- [Contributing](CONTRIBUTING.md): development setup, tests, the evaluation corpus, and the probe.
-- [AGENTS.md](AGENTS.md): rules for coding agents working in this repository.
+- [Contributing](https://github.com/briandconnelly/context-audit/blob/dev/CONTRIBUTING.md): development setup, tests, the evaluation corpus, and the probe.
+- [AGENTS.md](https://github.com/briandconnelly/context-audit/blob/dev/AGENTS.md): rules for coding agents working in this repository.
 
 ## License
 

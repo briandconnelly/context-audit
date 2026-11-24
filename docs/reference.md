@@ -102,7 +102,7 @@ For a finding in a project's `.claude/` directory, run `show` from that project'
 - **Observation**, as counts: calls requested, results delivered to the hook, and results fully, partly, and not scanned.
   The total number of tool results is unknown, and zero events means nothing was observed, not that anything is clean.
 
-What the probe showed, for Claude Code 2.1.330 and plugin 0.0.0, is in `research/2026-11-22-probe-observations.md` under "Packaged hooks".
+What the probe showed, for Claude Code 2.1.330 and plugin 0.0.0, is in [the probe observations](https://github.com/briandconnelly/context-audit/blob/dev/docs/research/2026-11-22-probe-observations.md) under "Packaged hooks".
 In short: text, structured, and split results and tool errors reach the hook and are scanned; a 140,000-character result was fully scanned, but its filler was chosen to fit the time budget, so that receipt says nothing about large results of other text; and a result over the byte budget is partly scanned and logged as a gap; the on-screen message was seen on a terminal in the default permission mode; and `show` read a result back from the transcript.
 Not probed, so not claimed: auto mode and headless delivery of messages, long error strings, and any hook event that did not fire; the full list is under "Not probed" in the same document.
 Auto mode is the interactive default, so unless it is probed, rely on `scan` and `status`, not the on-screen message, to learn of a finding there.
@@ -129,18 +129,18 @@ The per-sentence questions use the scanner's own sentence splitter, leave out se
 Each request has a 90-second timeout.
 The hook never calls the decider.
 
-The questions and the 0.7 threshold were tuned and measured against Jev only (`evaluation/jev_windows.py`); another model may behave differently.
+The questions and the 0.7 threshold were tuned and measured against Jev only ([`jev_windows.py`](https://github.com/briandconnelly/context-audit/blob/dev/evaluation/jev_windows.py)); another model may behave differently.
 
 ## How well it works
 
-The release gates were measured on 2026-11-23; the figures, tables, and caveats are in `research/2026-11-23-slice-1-gates-round-2.md`.
+The release gates were measured on 2026-11-23; the figures, tables, and caveats are in [the round-2 gates report](https://github.com/briandconnelly/context-audit/blob/dev/docs/research/2026-11-23-slice-1-gates-round-2.md).
 
-- On the owner's real installation of 120 skills, commands and agents, the first scan produced 14 high findings and all 14 were false; after the fix for those classes it produces none ([estate run](research/2026-11-23-estate-run.md)).
+- On the owner's real installation of 120 skills, commands and agents, the first scan produced 14 high findings and all 14 were false; after the fix for those classes it produces none ([estate run](https://github.com/briandconnelly/context-audit/blob/dev/docs/research/2026-11-23-estate-run.md)).
 - Recall on an independently written held-out set is 53 of 60 directives (88%).
   Two other sets of unseen directives gave 55% and 67%, so recall depends heavily on who wrote the text, and 88% is the top of the observed range.
 - On the project's own 150 controls and 1,000 generated benign results there is no high finding.
   On 100 held-out controls from an independent author, 4 produced a high finding at the round-2 measurement, within the limit of 5 in 100 the owner approved; benign text written to be hard produced more.
-  All 4 were skips conditioned on the user's own approval. A later fix, made by reading those 4 items, brought the count to 0 in a gates run on the working tree; that run is not yet recorded in `research/`, and since the fix was tuned on those items, 0 is development data, not a held-out result.
+  All 4 were skips conditioned on the user's own approval. A later fix, made by reading those 4 items, brought the count to 0 in a gates run on the working tree; that run is not yet recorded in [the research notes](https://github.com/briandconnelly/context-audit/blob/dev/docs/research), and since the fix was tuned on those items, 0 is development data, not a held-out result.
   That count was read after each of several fix rounds, so it is a lightly used validation signal, not a single blind reading.
   The recall count was also read during the last fix round (twice, then three times in a bisect) and one code change was reverted on it, so 53/60 was defended by selection; no held-out item was looked at. See "How the held-out sets were used" in the same document.
 - Review findings are not gated: generated benign results carry about 190 per 100, and 663 of 1,000 carry at least one.

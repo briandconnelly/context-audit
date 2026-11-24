@@ -1,0 +1,91 @@
+name: publish-runtime
+
+on:
+  push:
+    branches: [dev]
+
+# `dev` holds the source, tests, evaluation corpus and probe; `main` holds only the
+# runtime tree built from it (scripts/build-release-tree.py), so a plugin install, which
+# clones the default branch, never fetches the held-out corpus or other dev-only files.
+# Two pushes to dev must not race: the loser's push would leave `main`, the branch every
+# install fetches, stale with no alarm and no self-heal.
+concurrency: { group: publish-runtime, cancel-in-progress: true }
+
+permissions: {}
+
+jobs:
+  # The checks run here, in the same workflow as the publish, so the publish job depends
+  # on them for the exact commit being published. A separate workflow's run would have
+  # no dependency edge, and a commit could reach `main` before -- or despite -- its checks.
+  checks:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - name: Install shellcheck
+        run: sudo apt-get install -y shellcheck
+      - name: Sync dev environment
+        run: uv sync --locked
+      - name: Install prek
+        run: uv tool install prek==0.5.11
+      # As in prek.yml: no tracebacks, so held-out text never reaches the public log.
+      - name: Run prek hooks
+        env:
+          PYTEST_ADDOPTS: --tb=no -rfs -m 'not perf'
+        run: prek run --all-files
+
+  publish:
+    needs: checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 scripts/build-release-tree.py "$RUNNER_TEMP/release"
+      - name: Commit onto the main branch
+        # `main` keeps its history: each publish is a commit on top of the previous one,
+        # pushed without force, so the prior release stays addressable (`main~1`). Roll
+        # back by moving forward (`git revert`, or `git restore --source=main~1 -- .` then
+        # commit). A missing `main` is an error, not a first publish: `main` is bootstrapped
+        # once by hand as a parentless runtime-only commit (CONTRIBUTING.md), so no release
+        # ever has dev history, and the held-out corpus with it, behind it.
+        #
+        # The token reaches git through GIT_CONFIG_* variables, so it is never written to
+        # the clone's config or put on a command line.
+        env:
+          AUTH: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          basic=$(printf 'x-access-token:%s' "$AUTH" | base64 -w0)
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic"
+          url="https://github.com/${REPO}"
+          # A rerun of an older run, or one that lost a race, must not publish a stale tree
+          # on top of a newer release: publish only while this commit is still dev's tip.
+          tip=$(git ls-remote "$url" refs/heads/dev | cut -f1)
+          if [ "$tip" != "$GITHUB_SHA" ]; then
+            echo "dev is now at $tip, not $GITHUB_SHA; skipping a superseded publish"
+            exit 0
+          fi
+          git clone -q --branch main --single-branch "$url" "$RUNNER_TEMP/release-repo"
+          cd "$RUNNER_TEMP/release-repo"
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp -R "$RUNNER_TEMP/release/." .
+          rm -f .context-audit-release
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "release tree unchanged for $GITHUB_SHA; nothing to publish"
+            exit 0
+          fi
+          git commit -q -m "chore(release): runtime tree for $GITHUB_SHA"
+          git push -q origin main
